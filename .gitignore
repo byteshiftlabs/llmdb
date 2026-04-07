@@ -1,7 +1,6 @@
 __pycache__/
 *.pyc
 .venv/
-.venv2/
 demo/scores
 dist/
 *.egg-info/
