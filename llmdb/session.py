@@ -32,10 +32,11 @@ class SandboxError(DebugError):
 # Allowing them in user-supplied strings would let an LLM inject
 # arbitrary GDB commands into the MI stream.
 _MI_FORBIDDEN = frozenset("\n\r\x00")
+_REMOTE_TARGET_FORBIDDEN = frozenset(" \t\n\r\x00")
 
 _MAX_RADIUS = 50  # source-context sanity cap
 
-_DEFAULT_GDB_COMMAND = ["gdb", "--nx", "--quiet", "--interpreter=mi3"]
+_DEFAULT_GDB_EXECUTABLE = "gdb"
 _SYSTEM_SANDBOX_DIRS = ("/usr", "/bin", "/lib", "/lib64", "/sbin", "/etc")
 _RESOURCE_WRAPPER = textwrap.dedent(
     """
@@ -94,6 +95,14 @@ def _check_mi_safe(value: str, label: str) -> None:
         )
 
 
+def _check_remote_target_safe(value: str, label: str) -> None:
+    if any(ch in _REMOTE_TARGET_FORBIDDEN for ch in value):
+        raise ValueError(
+            f"{label!r} contains whitespace or control characters that are not allowed "
+            f"in a remote target specification."
+        )
+
+
 def _is_within_allowed_roots(path: Path, allowed_roots: tuple[Path, ...]) -> bool:
     resolved = path.resolve()
     for root in allowed_roots:
@@ -115,8 +124,9 @@ def _build_sandbox_command(
     executable: Path,
     config: SandboxConfig,
     allowed_roots: tuple[Path, ...],
+    gdb_executable: str,
 ) -> list[str]:
-    gdb_command = list(_DEFAULT_GDB_COMMAND)
+    gdb_command = [gdb_executable, "--nx", "--quiet", "--interpreter=mi3"]
     wrapped_command = _wrap_with_resource_limits(gdb_command, config)
     if not config.enabled:
         return wrapped_command
@@ -180,7 +190,12 @@ def _wrap_with_resource_limits(command: list[str], config: SandboxConfig) -> lis
 
 
 class DebugSession:
-    def __init__(self, executable: str, sandbox: Optional[SandboxConfig] = None) -> None:
+    def __init__(
+        self,
+        executable: str,
+        sandbox: Optional[SandboxConfig] = None,
+        gdb_executable: str = _DEFAULT_GDB_EXECUTABLE,
+    ) -> None:
         p = Path(executable).resolve()
         if not p.is_file():
             raise FileNotFoundError(f"Executable not found: {executable}")
@@ -191,8 +206,12 @@ class DebugSession:
         _check_allowed_path(p, "executable", self._allowed_roots)
         self.session_id: str = str(uuid.uuid4())
         self._executable: str = str(p)
-        self._gdb = GdbController(command=_build_sandbox_command(p, self._sandbox, self._allowed_roots))
-        self._send(f"-file-exec-and-symbols {self._executable}")
+        self._gdb_executable = gdb_executable
+        self._remote_target: Optional[str] = None
+        self._gdb = GdbController(
+            command=_build_sandbox_command(p, self._sandbox, self._allowed_roots, self._gdb_executable)
+        )
+        self._send(f"-file-exec-and-symbols {self._executable}", timeout_sec=30)
 
     # ------------------------------------------------------------------
     # Execution control
@@ -213,6 +232,20 @@ class DebugSession:
     def continue_execution(self) -> StopEvent:
         self._gdb.write("-exec-continue", read_response=False)
         return self._wait_for_stop()
+
+    def connect_remote_target(self, target: str, transport: str = "remote") -> dict:
+        _check_remote_target_safe(target, "target")
+        if transport not in {"remote", "extended-remote"}:
+            raise ValueError("transport must be 'remote' or 'extended-remote'")
+        self._send(f"-target-select {transport} {target}")
+        self._remote_target = target
+        return {"target": target, "transport": transport, "connected": True}
+
+    def disconnect_remote_target(self) -> dict:
+        self._send("-target-disconnect")
+        target = self._remote_target
+        self._remote_target = None
+        return {"target": target, "connected": False}
 
     def quit(self) -> None:
         try:
@@ -293,17 +326,17 @@ class DebugSession:
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _send(self, command: str) -> dict:
+    def _send(self, command: str, timeout_sec: int = 10) -> dict:
         """Send an MI command; return its payload or raise DebugError."""
         self._gdb.write(command, read_response=False)
-        responses = self._gdb.get_gdb_response(timeout_sec=10) or []
+        responses = self._gdb.get_gdb_response(timeout_sec=timeout_sec) or []
         return self._extract_payload(responses)
 
     def _extract_payload(self, responses: list) -> dict:
         for r in responses:
             if r.get("message") == "error":
                 raise DebugError(r.get("payload", {}).get("msg", "GDB error"))
-            if r.get("message") == "done":
+            if r.get("message") in {"done", "connected"}:
                 return r.get("payload") or {}
         return {}
 

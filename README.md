@@ -9,6 +9,7 @@ results as [Model Context Protocol](https://modelcontextprotocol.io/) tools.
 An LLM connected to this server can:
 
 - Launch a compiled program under GDB
+- Connect that GDB session to a remote target such as QEMU's GDB stub or `gdbserver`
 - Step through code line by line or into function calls
 - Set and remove breakpoints by file/line or function name
 - Read local variables and evaluate arbitrary expressions
@@ -67,6 +68,8 @@ You can integrate it as an MCP server in any capable client by configuring the c
 | Tool | Description |
 |------|-------------|
 | `start_session` | Launch a program under GDB; returns a session ID |
+| `connect_remote_target` | Connect the session to a remote GDB target such as `:1234` |
+| `disconnect_remote_target` | Disconnect the session from its remote target |
 | `stop_session` | Terminate GDB and clean up the session |
 | `run` | Start execution (`-exec-run`) |
 | `next` | Step over one source line |
@@ -80,6 +83,10 @@ You can integrate it as an MCP server in any capable client by configuring the c
 | `evaluate` | Evaluate any GDB expression |
 
 `start_session` also accepts optional `workspace_root`, `tool_policy`, `allow_network`, `disable_sandbox`, `cpu_seconds`, `memory_mb`, and `process_limit` arguments.
+
+When debugging non-host architectures, `start_session` can also take `gdb_executable` to select a matching debugger such as `riscv64-unknown-elf-gdb`.
+
+For remote debugging workflows such as ThunderOS on QEMU, start the session with `allow_network=true`, then call `connect_remote_target` with the published GDB target such as `:1234`.
 | `backtrace` | Return the full call stack |
 | `frame_info` | Return the current frame (file, line, function) |
 | `list_locals` | List all local variables in the current frame |
