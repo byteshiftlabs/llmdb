@@ -23,6 +23,15 @@ Items without a milestone are ideas under consideration, not committed work.
 - [ ] Structured MCP error codes (map `DebugError` subtypes to MCP error payloads)
 - [ ] Pin the `uv`-resolved lockfile (`uv lock`) so CI uses reproducible deps
 
+### Security and isolation
+
+- [x] Linux sandboxed launch path using Bubblewrap namespaces for GDB
+- [x] Explicit workspace / executable-path allowlist for session start and source reads
+- [x] Unprivileged sandbox user with temporary home directory
+- [x] Networking disabled by default inside the sandbox
+- [x] CPU, memory, and process-count limits applied before launching GDB
+- [x] Tool policy tiers: `inspect`, `debug`, `full`
+
 ---
 
 ## v0.3 — Richer inspection

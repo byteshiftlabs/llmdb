@@ -6,7 +6,12 @@ blocks on async events, and returns typed domain objects.
 """
 
 import os
+import resource
+import shutil
+import sys
+import textwrap
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
@@ -19,12 +24,65 @@ class DebugError(Exception):
     """Raised when GDB returns an error record."""
 
 
+class SandboxError(DebugError):
+    """Raised when sandbox policy or availability prevents a session from starting."""
+
+
 # Characters that GDB/MI uses as command separators.
 # Allowing them in user-supplied strings would let an LLM inject
 # arbitrary GDB commands into the MI stream.
 _MI_FORBIDDEN = frozenset("\n\r\x00")
 
 _MAX_RADIUS = 50  # source-context sanity cap
+
+_DEFAULT_GDB_COMMAND = ["gdb", "--nx", "--quiet", "--interpreter=mi3"]
+_SYSTEM_SANDBOX_DIRS = ("/usr", "/bin", "/lib", "/lib64", "/sbin", "/etc")
+_RESOURCE_WRAPPER = textwrap.dedent(
+    """
+    import os
+    import resource
+    import sys
+
+    cpu_seconds = int(sys.argv[1])
+    memory_bytes = int(sys.argv[2])
+    process_limit = int(sys.argv[3])
+    command = sys.argv[4:]
+
+    if cpu_seconds > 0:
+        resource.setrlimit(resource.RLIMIT_CPU, (cpu_seconds, cpu_seconds))
+    if memory_bytes > 0:
+        resource.setrlimit(resource.RLIMIT_AS, (memory_bytes, memory_bytes))
+    if process_limit > 0 and hasattr(resource, "RLIMIT_NPROC"):
+        resource.setrlimit(resource.RLIMIT_NPROC, (process_limit, process_limit))
+    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+
+    os.execvp(command[0], command)
+    """
+).strip()
+
+
+@dataclass(frozen=True)
+class SandboxConfig:
+    enabled: bool = True
+    workspace_root: Optional[Path] = None
+    allow_network: bool = False
+    cpu_seconds: int = 30
+    memory_bytes: int = 1_073_741_824
+    process_limit: int = 64
+    extra_allowed_roots: tuple[Path, ...] = ()
+
+    def allowed_roots(self, executable: Path) -> tuple[Path, ...]:
+        roots: list[Path] = []
+        if self.workspace_root is not None:
+            roots.append(self.workspace_root.resolve())
+        roots.append(executable.parent.resolve())
+        roots.extend(root.resolve() for root in self.extra_allowed_roots)
+
+        deduped: list[Path] = []
+        for root in roots:
+            if root not in deduped:
+                deduped.append(root)
+        return tuple(deduped)
 
 
 def _check_mi_safe(value: str, label: str) -> None:
@@ -36,17 +94,105 @@ def _check_mi_safe(value: str, label: str) -> None:
         )
 
 
+def _is_within_allowed_roots(path: Path, allowed_roots: tuple[Path, ...]) -> bool:
+    resolved = path.resolve()
+    for root in allowed_roots:
+        try:
+            resolved.relative_to(root)
+            return True
+        except ValueError:
+            continue
+    return False
+
+
+def _check_allowed_path(path: Path, label: str, allowed_roots: tuple[Path, ...]) -> None:
+    if not _is_within_allowed_roots(path, allowed_roots):
+        roots = ", ".join(str(root) for root in allowed_roots)
+        raise PermissionError(f"{label} must stay inside allowed roots: {roots}")
+
+
+def _build_sandbox_command(
+    executable: Path,
+    config: SandboxConfig,
+    allowed_roots: tuple[Path, ...],
+) -> list[str]:
+    gdb_command = list(_DEFAULT_GDB_COMMAND)
+    wrapped_command = _wrap_with_resource_limits(gdb_command, config)
+    if not config.enabled:
+        return wrapped_command
+
+    bwrap_path = shutil.which("bwrap")
+    if bwrap_path is None:
+        raise SandboxError(
+            "Sandboxed mode requires bubblewrap ('bwrap') on PATH. "
+            "Install bubblewrap or start the session with disable_sandbox=true."
+        )
+
+    sandbox_command = [
+        bwrap_path,
+        "--die-with-parent",
+        "--new-session",
+        "--unshare-user",
+        "--unshare-pid",
+        "--unshare-ipc",
+        "--unshare-uts",
+        "--uid",
+        "65534",
+        "--gid",
+        "65534",
+        "--proc",
+        "/proc",
+        "--dev",
+        "/dev",
+        "--tmpfs",
+        "/tmp",
+        "--tmpfs",
+        "/var/tmp",
+        "--setenv",
+        "HOME",
+        "/tmp/llmdb-home",
+        "--chdir",
+        str(config.workspace_root.resolve() if config.workspace_root else executable.parent.resolve()),
+    ]
+    if not config.allow_network:
+        sandbox_command.append("--unshare-net")
+
+    for system_dir in _SYSTEM_SANDBOX_DIRS:
+        if Path(system_dir).exists():
+            sandbox_command.extend(["--ro-bind", system_dir, system_dir])
+    for root in allowed_roots:
+        sandbox_command.extend(["--ro-bind", str(root), str(root)])
+
+    sandbox_command.extend(wrapped_command)
+    return sandbox_command
+
+
+def _wrap_with_resource_limits(command: list[str], config: SandboxConfig) -> list[str]:
+    return [
+        sys.executable,
+        "-c",
+        _RESOURCE_WRAPPER,
+        str(config.cpu_seconds),
+        str(config.memory_bytes),
+        str(config.process_limit),
+        *command,
+    ]
+
+
 class DebugSession:
-    def __init__(self, executable: str) -> None:
-        p = Path(executable)
+    def __init__(self, executable: str, sandbox: Optional[SandboxConfig] = None) -> None:
+        p = Path(executable).resolve()
         if not p.is_file():
             raise FileNotFoundError(f"Executable not found: {executable}")
         if not os.access(executable, os.X_OK):
             raise PermissionError(f"File is not executable: {executable}")
+        self._sandbox = sandbox or SandboxConfig()
+        self._allowed_roots = self._sandbox.allowed_roots(p)
+        _check_allowed_path(p, "executable", self._allowed_roots)
         self.session_id: str = str(uuid.uuid4())
-        self._executable: str = executable
-        self._gdb = GdbController()
-        self._send(f"-file-exec-and-symbols {executable}")
+        self._executable: str = str(p)
+        self._gdb = GdbController(command=_build_sandbox_command(p, self._sandbox, self._allowed_roots))
+        self._send(f"-file-exec-and-symbols {self._executable}")
 
     # ------------------------------------------------------------------
     # Execution control
@@ -81,6 +227,9 @@ class DebugSession:
 
     def set_breakpoint(self, file: str, line: int) -> Breakpoint:
         _check_mi_safe(file, "file")
+        file_path = Path(file)
+        if file_path.is_absolute():
+            _check_allowed_path(file_path, "breakpoint file", self._allowed_roots)
         payload = self._send(f"-break-insert {file}:{line}")
         return self._parse_breakpoint(payload["bkpt"])
 
@@ -133,6 +282,7 @@ class DebugSession:
         path = Path(frame.file)
         if not path.is_file():
             raise FileNotFoundError(f"Source file not found: {frame.file}")
+        _check_allowed_path(path, "source file", self._allowed_roots)
         lines = path.read_text().splitlines()
         center = frame.line - 1  # 0-based
         start = max(0, center - radius)

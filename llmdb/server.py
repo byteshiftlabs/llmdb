@@ -8,6 +8,7 @@ JSON-serialisable dict.
 Entry point: llmdb.server:main  (see pyproject.toml)
 """
 
+import os
 import sys
 from dataclasses import asdict
 from pathlib import Path
@@ -17,10 +18,23 @@ from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
 import mcp.types as types
 
-from llmdb.session import DebugSession, DebugError
+from llmdb.session import DebugSession, DebugError, SandboxConfig
 
 # Session registry — keyed by session_id UUID string
 _sessions: dict[str, DebugSession] = {}
+_session_policies: dict[str, str] = {}
+
+_POLICY_ORDER = {"inspect": 0, "debug": 1, "full": 2}
+_TOOL_POLICIES = {
+    "run": "debug",
+    "next": "debug",
+    "step": "debug",
+    "continue_execution": "debug",
+    "set_breakpoint": "debug",
+    "set_function_breakpoint": "debug",
+    "remove_breakpoint": "debug",
+    "evaluate": "full",
+}
 
 app = Server("llmdb")
 
@@ -35,6 +49,17 @@ def _lookup(session_id: str) -> DebugSession:
     return _sessions[session_id]
 
 
+def _check_tool_policy(session_id: str, tool_name: str) -> DebugSession:
+    session = _lookup(session_id)
+    current = _session_policies.get(session_id, "full")
+    required = _TOOL_POLICIES.get(tool_name, "inspect")
+    if _POLICY_ORDER[current] < _POLICY_ORDER[required]:
+        raise PermissionError(
+            f"Tool '{tool_name}' requires tool_policy='{required}', current policy is '{current}'."
+        )
+    return session
+
+
 def _serialise(obj) -> dict:
     return asdict(obj)
 
@@ -43,12 +68,37 @@ def _serialise(obj) -> dict:
 # Session lifecycle (also called directly by tests)
 # ---------------------------------------------------------------------------
 
-def _start_session(executable: str) -> str:
+def _start_session(
+    executable: str,
+    workspace_root: str | None = None,
+    tool_policy: str = "debug",
+    allow_network: bool = False,
+    disable_sandbox: bool = False,
+    cpu_seconds: int = 30,
+    memory_mb: int = 1024,
+    process_limit: int = 64,
+) -> str:
     """Launch GDB on executable; return session_id."""
     if not Path(executable).is_file():
         raise FileNotFoundError(f"Executable not found: {executable}")
-    session = DebugSession(executable)
+    if tool_policy not in _POLICY_ORDER:
+        raise ValueError(f"Unsupported tool_policy: {tool_policy}")
+
+    extra_roots = tuple(
+        Path(root).resolve() for root in os.environ.get("LLMDB_ALLOWED_ROOTS", "").split(os.pathsep) if root
+    )
+    sandbox = SandboxConfig(
+        enabled=not disable_sandbox,
+        workspace_root=Path(workspace_root).resolve() if workspace_root else None,
+        allow_network=allow_network,
+        cpu_seconds=cpu_seconds,
+        memory_bytes=memory_mb * 1024 * 1024,
+        process_limit=process_limit,
+        extra_allowed_roots=extra_roots,
+    )
+    session = DebugSession(executable, sandbox=sandbox)
     _sessions[session.session_id] = session
+    _session_policies[session.session_id] = tool_policy
     return session.session_id
 
 
@@ -56,6 +106,7 @@ def _stop_session(session_id: str) -> None:
     session = _lookup(session_id)
     session.quit()
     del _sessions[session_id]
+    _session_policies.pop(session_id, None)
 
 
 # ---------------------------------------------------------------------------
@@ -63,19 +114,19 @@ def _stop_session(session_id: str) -> None:
 # ---------------------------------------------------------------------------
 
 def _run(session_id: str) -> dict:
-    return _serialise(_lookup(session_id).run())
+    return _serialise(_check_tool_policy(session_id, "run").run())
 
 
 def _next(session_id: str) -> dict:
-    return _serialise(_lookup(session_id).next())
+    return _serialise(_check_tool_policy(session_id, "next").next())
 
 
 def _step(session_id: str) -> dict:
-    return _serialise(_lookup(session_id).step())
+    return _serialise(_check_tool_policy(session_id, "step").step())
 
 
 def _continue_execution(session_id: str) -> dict:
-    return _serialise(_lookup(session_id).continue_execution())
+    return _serialise(_check_tool_policy(session_id, "continue_execution").continue_execution())
 
 
 # ---------------------------------------------------------------------------
@@ -83,15 +134,15 @@ def _continue_execution(session_id: str) -> dict:
 # ---------------------------------------------------------------------------
 
 def _set_breakpoint(session_id: str, file: str, line: int) -> dict:
-    return _serialise(_lookup(session_id).set_breakpoint(file, line))
+    return _serialise(_check_tool_policy(session_id, "set_breakpoint").set_breakpoint(file, line))
 
 
 def _set_function_breakpoint(session_id: str, function: str) -> dict:
-    return _serialise(_lookup(session_id).set_function_breakpoint(function))
+    return _serialise(_check_tool_policy(session_id, "set_function_breakpoint").set_function_breakpoint(function))
 
 
 def _remove_breakpoint(session_id: str, bp_id: int) -> None:
-    _lookup(session_id).remove_breakpoint(bp_id)
+    _check_tool_policy(session_id, "remove_breakpoint").remove_breakpoint(bp_id)
 
 
 def _list_breakpoints(session_id: str) -> list[dict]:
@@ -107,7 +158,7 @@ def _read_variable(session_id: str, name: str) -> dict:
 
 
 def _evaluate(session_id: str, expression: str) -> str:
-    return _lookup(session_id).evaluate(expression)
+    return _check_tool_policy(session_id, "evaluate").evaluate(expression)
 
 
 def _backtrace(session_id: str) -> list[dict]:
@@ -134,7 +185,15 @@ _TOOLS = [
     Tool(name="start_session",
          description="Launch GDB on an executable. Returns a session_id.",
          inputSchema={"type": "object",
-                      "properties": {"executable": {"type": "string"}},
+                      "properties": {
+                          "executable": {"type": "string"},
+                          "workspace_root": {"type": "string"},
+                          "tool_policy": {"type": "string", "enum": ["inspect", "debug", "full"], "default": "debug"},
+                          "allow_network": {"type": "boolean", "default": False},
+                          "disable_sandbox": {"type": "boolean", "default": False},
+                          "cpu_seconds": {"type": "integer", "default": 30},
+                          "memory_mb": {"type": "integer", "default": 1024},
+                          "process_limit": {"type": "integer", "default": 64}},
                       "required": ["executable"]}),
     Tool(name="stop_session",
          description="Quit GDB and remove the session.",
@@ -196,7 +255,7 @@ _TOOLS = [
                           "name": {"type": "string"}},
                       "required": ["session_id", "name"]}),
     Tool(name="evaluate",
-         description="Evaluate an arbitrary GDB expression; returns the result as a string.",
+            description="Evaluate an arbitrary GDB expression; available only with tool_policy='full'.",
          inputSchema={"type": "object",
                       "properties": {
                           "session_id": {"type": "string"},
@@ -227,7 +286,16 @@ _TOOLS = [
 ]
 
 _DISPATCH = {
-    "start_session":           lambda a: _start_session(a["executable"]),
+    "start_session":           lambda a: _start_session(
+                                   a["executable"],
+                                   a.get("workspace_root"),
+                                   a.get("tool_policy", "debug"),
+                                   a.get("allow_network", False),
+                                   a.get("disable_sandbox", False),
+                                   a.get("cpu_seconds", 30),
+                                   a.get("memory_mb", 1024),
+                                   a.get("process_limit", 64),
+                               ),
     "stop_session":            lambda a: _stop_session(a["session_id"]),
     "run":                     lambda a: _run(a["session_id"]),
     "next":                    lambda a: _next(a["session_id"]),
