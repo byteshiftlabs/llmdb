@@ -8,7 +8,7 @@ No actual GDB binary is needed to run this suite.
 import pytest
 from unittest.mock import MagicMock, patch, call
 
-from llmdb.models import Frame, Breakpoint, Variable, StopEvent
+from llmdb.models import Breakpoint, Frame, RegisterValue, StopEvent, ThreadInfo, Variable
 from llmdb.session import DebugSession, DebugError, SandboxConfig
 
 
@@ -146,10 +146,20 @@ class TestRemoteTargets:
 
     def test_disconnect_remote_target_returns_disconnected_state(self, session):
         session._remote_target = ":1234"
+        session._remote_transport = "remote"
         session._gdb.get_gdb_response.return_value = done_response()
         result = session.disconnect_remote_target()
         assert result == {"target": ":1234", "connected": False}
         assert session._remote_target is None
+        assert session._remote_transport is None
+
+    def test_target_info_tracks_remote_target_and_sandbox(self, session):
+        session._remote_target = ":1234"
+        session._remote_transport = "remote"
+        target = session.target_info()
+        assert target.remote_target == ":1234"
+        assert target.remote_transport == "remote"
+        assert target.gdb_executable == "gdb"
 
 
 class TestNext:
@@ -187,6 +197,69 @@ class TestContinue:
         ev = session.continue_execution()
         assert ev.reason == "breakpoint-hit"
         assert ev.frame.line == 20
+
+
+class TestMonitoringState:
+    def test_session_status_tracks_last_stop_event(self, session):
+        session._gdb.get_gdb_response.side_effect = [
+            [],
+            stopped_response("breakpoint-hit", file="main.c", line=20),
+            done_response({"BreakpointTable": {"body": []}}),
+            done_response({"threads": [], "current-thread-id": "1"}),
+        ]
+        session.continue_execution()
+        status = session.session_status()
+        assert status.state == "stopped"
+        assert status.stop_event_count == 1
+        assert status.last_stop_event is not None
+        assert status.last_stop_event.event.reason == "breakpoint-hit"
+        assert status.current_frame is not None
+        assert status.current_frame.line == 20
+
+    def test_stop_event_history_rejects_invalid_limit(self, session):
+        with pytest.raises(ValueError, match="at least 1"):
+            session.stop_event_history(0)
+
+    def test_list_threads_parses_thread_payload(self, session):
+        session._gdb.get_gdb_response.return_value = done_response({
+            "current-thread-id": "2",
+            "threads": [
+                {
+                    "id": "2",
+                    "target-id": "Thread 0x2",
+                    "state": "stopped",
+                    "name": "main-thread",
+                    "core": "3",
+                    "frame": {"level": "0", "func": "kernel_main", "file": "kernel.c", "line": "7"},
+                }
+            ],
+        })
+        threads = session.list_threads()
+        assert threads == [
+            ThreadInfo(
+                thread_id="2",
+                target_id="Thread 0x2",
+                state="stopped",
+                current=True,
+                name="main-thread",
+                core="3",
+                frame=session._parse_frame({"level": "0", "func": "kernel_main", "file": "kernel.c", "line": "7"}),
+            )
+        ]
+
+    def test_list_registers_combines_names_and_values(self, session):
+        session._gdb.get_gdb_response.side_effect = [
+            done_response({"register-names": ["zero", "ra"]}),
+            done_response({"register-values": [
+                {"number": "0", "value": "0x00000000"},
+                {"number": "1", "value": "0x00001000"},
+            ]}),
+        ]
+        registers = session.list_registers()
+        assert registers == [
+            RegisterValue(number=0, name="zero", value="0x00000000"),
+            RegisterValue(number=1, name="ra", value="0x00001000"),
+        ]
 
 
 # ---------------------------------------------------------------------------
@@ -383,6 +456,33 @@ class TestListSourceContext:
         ))
         lines = session.list_source_context(radius=5)
         assert len(lines) >= 1
+
+    def test_list_source_context_resolves_relative_path_inside_workspace_root(self, tmp_path):
+        workspace_root = tmp_path / "workspace"
+        source_dir = workspace_root / "kernel"
+        source_dir.mkdir(parents=True)
+        src = source_dir / "main.c"
+        src.write_text("line1\nline2\nline3\n")
+
+        exe = workspace_root / "prog"
+        exe.write_bytes(b"\x7fELF")
+        exe.chmod(0o755)
+
+        with patch("llmdb.session.GdbController") as MockCtrl:
+            mock_ctrl = MagicMock()
+            mock_ctrl.get_gdb_response.return_value = done_response()
+            MockCtrl.return_value = mock_ctrl
+            session = DebugSession(
+                str(exe),
+                sandbox=SandboxConfig(enabled=False, workspace_root=workspace_root),
+            )
+
+        session._gdb = mock_ctrl
+        session.frame_info = MagicMock(return_value=Frame(
+            level=0, function="kernel_main", file="kernel/main.c", line=2
+        ))
+        lines = session.list_source_context(radius=1)
+        assert lines == ["   1: line1", "   2: line2", "   3: line3"]
 
     def test_list_source_context_raises_if_file_missing(self, session):
         session.frame_info = MagicMock(return_value=Frame(

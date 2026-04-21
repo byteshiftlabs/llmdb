@@ -17,7 +17,18 @@ from typing import Optional
 
 from pygdbmi.gdbcontroller import GdbController
 
-from llmdb.models import Breakpoint, Frame, StopEvent, Variable
+from llmdb.models import (
+    Breakpoint,
+    Frame,
+    MonitorSnapshot,
+    RegisterValue,
+    SessionStatus,
+    StopEvent,
+    StopRecord,
+    TargetInfo,
+    ThreadInfo,
+    Variable,
+)
 
 
 class DebugError(Exception):
@@ -120,6 +131,22 @@ def _check_allowed_path(path: Path, label: str, allowed_roots: tuple[Path, ...])
         raise PermissionError(f"{label} must stay inside allowed roots: {roots}")
 
 
+def _resolve_allowed_path(path: Path, allowed_roots: tuple[Path, ...]) -> Path:
+    if path.is_absolute():
+        resolved = path.resolve()
+        if not resolved.is_file():
+            return resolved
+        _check_allowed_path(resolved, "source file", allowed_roots)
+        return resolved
+
+    for root in allowed_roots:
+        candidate = (root / path).resolve()
+        if candidate.is_file():
+            _check_allowed_path(candidate, "source file", allowed_roots)
+            return candidate
+    return path
+
+
 def _build_sandbox_command(
     executable: Path,
     config: SandboxConfig,
@@ -208,6 +235,10 @@ class DebugSession:
         self._executable: str = str(p)
         self._gdb_executable = gdb_executable
         self._remote_target: Optional[str] = None
+        self._remote_transport: Optional[str] = None
+        self._state = "idle"
+        self._current_frame: Optional[Frame] = None
+        self._stop_history: list[StopRecord] = []
         self._gdb = GdbController(
             command=_build_sandbox_command(p, self._sandbox, self._allowed_roots, self._gdb_executable)
         )
@@ -218,18 +249,22 @@ class DebugSession:
     # ------------------------------------------------------------------
 
     def run(self) -> StopEvent:
+        self._state = "running"
         self._gdb.write("-exec-run", read_response=False)
         return self._wait_for_stop()
 
     def next(self) -> StopEvent:
+        self._state = "running"
         self._gdb.write("-exec-next", read_response=False)
         return self._wait_for_stop()
 
     def step(self) -> StopEvent:
+        self._state = "running"
         self._gdb.write("-exec-step", read_response=False)
         return self._wait_for_stop()
 
     def continue_execution(self) -> StopEvent:
+        self._state = "running"
         self._gdb.write("-exec-continue", read_response=False)
         return self._wait_for_stop()
 
@@ -239,12 +274,16 @@ class DebugSession:
             raise ValueError("transport must be 'remote' or 'extended-remote'")
         self._send(f"-target-select {transport} {target}")
         self._remote_target = target
+        self._remote_transport = transport
+        self._state = "connected"
         return {"target": target, "transport": transport, "connected": True}
 
     def disconnect_remote_target(self) -> dict:
         self._send("-target-disconnect")
         target = self._remote_target
         self._remote_target = None
+        self._remote_transport = None
+        self._state = "disconnected"
         return {"target": target, "connected": False}
 
     def quit(self) -> None:
@@ -279,6 +318,54 @@ class DebugSession:
         body = payload.get("BreakpointTable", {}).get("body", [])
         return [self._parse_breakpoint(entry) for entry in body]
 
+    def session_status(self) -> SessionStatus:
+        last_stop = self._stop_history[-1] if self._stop_history else None
+        breakpoint_count = self._safe_len(self.list_breakpoints)
+        thread_count = self._safe_len(self.list_threads)
+        return SessionStatus(
+            session_id=self.session_id,
+            state=self._state,
+            current_frame=self._current_frame,
+            last_stop_event=last_stop,
+            stop_event_count=len(self._stop_history),
+            breakpoint_count=breakpoint_count,
+            thread_count=thread_count,
+        )
+
+    def target_info(self) -> TargetInfo:
+        return TargetInfo(
+            executable=self._executable,
+            gdb_executable=self._gdb_executable,
+            remote_target=self._remote_target,
+            remote_transport=self._remote_transport,
+            connected=self._remote_target is not None,
+            sandbox_enabled=self._sandbox.enabled,
+            network_allowed=self._sandbox.allow_network,
+            workspace_root=str(self._sandbox.workspace_root) if self._sandbox.workspace_root else None,
+        )
+
+    def stop_event_history(self, limit: int = 20) -> list[StopRecord]:
+        if limit < 1:
+            raise ValueError("limit must be at least 1")
+        return list(self._stop_history[-limit:])
+
+    def monitor_snapshot(self, radius: int = 5) -> MonitorSnapshot:
+        breakpoints = self._safe_call(self.list_breakpoints, default=[])
+        threads = self._safe_call(self.list_threads, default=[])
+        registers = self._safe_call(self.list_registers, default=[])
+        locals_ = self._safe_call(self.list_locals, default=[])
+        source_context = self._safe_call(lambda: self.list_source_context(radius), default=[])
+        return MonitorSnapshot(
+            status=self.session_status(),
+            target=self.target_info(),
+            breakpoints=breakpoints,
+            threads=threads,
+            registers=registers,
+            locals=locals_,
+            source_context=source_context,
+            stop_event_history=self.stop_event_history(),
+        )
+
     # ------------------------------------------------------------------
     # Inspection
     # ------------------------------------------------------------------
@@ -298,6 +385,22 @@ class DebugSession:
         stack = payload.get("stack", [])
         return [self._parse_frame(entry.get("frame", entry)) for entry in stack]
 
+    def list_threads(self) -> list[ThreadInfo]:
+        payload = self._send("-thread-info")
+        current_thread_id = payload.get("current-thread-id")
+        return [self._parse_thread(thread, current_thread_id) for thread in payload.get("threads", [])]
+
+    def list_registers(self) -> list[RegisterValue]:
+        names_payload = self._send("-data-list-register-names")
+        values_payload = self._send("-data-list-register-values x")
+        register_names = names_payload.get("register-names", [])
+        registers: list[RegisterValue] = []
+        for register in values_payload.get("register-values", []):
+            number = int(register["number"])
+            name = register_names[number] if number < len(register_names) and register_names[number] else f"r{number}"
+            registers.append(RegisterValue(number=number, name=name, value=register.get("value", "?")))
+        return registers
+
     def frame_info(self) -> Frame:
         payload = self._send("-stack-info-frame")
         return self._parse_frame(payload["frame"])
@@ -312,10 +415,9 @@ class DebugSession:
     def list_source_context(self, radius: int = 5) -> list[str]:
         radius = min(radius, _MAX_RADIUS)
         frame = self.frame_info()
-        path = Path(frame.file)
+        path = _resolve_allowed_path(Path(frame.file), self._allowed_roots)
         if not path.is_file():
             raise FileNotFoundError(f"Source file not found: {frame.file}")
-        _check_allowed_path(path, "source file", self._allowed_roots)
         lines = path.read_text().splitlines()
         center = frame.line - 1  # 0-based
         start = max(0, center - radius)
@@ -350,7 +452,28 @@ class DebugSession:
                 if r.get("message") == "error":
                     raise DebugError(r.get("payload", {}).get("msg", "GDB error"))
                 if r.get("message") == "stopped":
-                    return self._parse_stop_event(r["payload"])
+                    return self._record_stop_event(self._parse_stop_event(r["payload"]))
+
+    def _record_stop_event(self, event: StopEvent) -> StopEvent:
+        self._current_frame = event.frame
+        if event.reason.startswith("exited"):
+            self._state = "exited"
+        else:
+            self._state = "stopped"
+        self._stop_history.append(StopRecord(sequence=len(self._stop_history) + 1, event=event))
+        return event
+
+    def _safe_call(self, func, default):
+        try:
+            return func()
+        except (DebugError, FileNotFoundError, PermissionError):
+            return default
+
+    def _safe_len(self, func) -> Optional[int]:
+        result = self._safe_call(func, default=None)
+        if result is None:
+            return None
+        return len(result)
 
     def _parse_stop_event(self, payload: dict) -> StopEvent:
         return StopEvent(
@@ -365,6 +488,18 @@ class DebugSession:
             function=f.get("func", "??"),
             file=f.get("file", f.get("fullname", "??")),
             line=int(f.get("line", 0)),
+        )
+
+    def _parse_thread(self, thread: dict, current_thread_id: Optional[str]) -> ThreadInfo:
+        frame = thread.get("frame")
+        return ThreadInfo(
+            thread_id=str(thread.get("id", "?")),
+            target_id=thread.get("target-id", "?"),
+            state=thread.get("state", "unknown"),
+            current=str(thread.get("id", "?")) == str(current_thread_id),
+            name=thread.get("name"),
+            core=thread.get("core"),
+            frame=self._parse_frame(frame) if frame else None,
         )
 
     def _parse_breakpoint(self, bkpt: dict) -> Breakpoint:

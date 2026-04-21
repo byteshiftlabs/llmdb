@@ -12,7 +12,7 @@ import pytest
 from unittest.mock import MagicMock, patch
 from dataclasses import asdict
 
-from llmdb.models import Frame, Breakpoint, Variable, StopEvent
+from llmdb.models import Breakpoint, Frame, RegisterValue, SessionStatus, StopEvent, StopRecord, TargetInfo, ThreadInfo, Variable
 from llmdb.session import DebugError
 
 
@@ -227,6 +227,86 @@ class TestListBreakpointsTool:
         result = srv._list_breakpoints(sid)
         assert isinstance(result, list)
         assert result[0]["bp_id"] == 1
+
+
+class TestMonitoringTools:
+    def test_session_status_returns_dict(self):
+        session = make_session()
+        session.session_status.return_value = SessionStatus(
+            session_id="test-uuid-1234",
+            state="stopped",
+            current_frame=Frame(level=0, function="main", file="main.c", line=5),
+            last_stop_event=StopRecord(
+                sequence=1,
+                event=StopEvent(
+                    reason="breakpoint-hit",
+                    frame=Frame(level=0, function="main", file="main.c", line=5),
+                ),
+            ),
+            stop_event_count=1,
+            breakpoint_count=2,
+            thread_count=1,
+        )
+        sid = register(session)
+        result = srv._session_status(sid)
+        assert result["state"] == "stopped"
+        assert result["last_stop_event"]["sequence"] == 1
+
+    def test_target_info_returns_dict(self):
+        session = make_session()
+        session.target_info.return_value = TargetInfo(
+            executable="/tmp/prog",
+            gdb_executable="riscv64-unknown-elf-gdb",
+            remote_target=":1234",
+            remote_transport="remote",
+            connected=True,
+            sandbox_enabled=False,
+            network_allowed=True,
+            workspace_root="/tmp",
+        )
+        sid = register(session)
+        result = srv._target_info(sid)
+        assert result["remote_target"] == ":1234"
+        assert result["connected"] is True
+
+    def test_stop_event_history_returns_list_of_dicts(self):
+        session = make_session()
+        session.stop_event_history.return_value = [
+            StopRecord(
+                sequence=1,
+                event=StopEvent(
+                    reason="breakpoint-hit",
+                    frame=Frame(level=0, function="main", file="main.c", line=5),
+                ),
+            )
+        ]
+        sid = register(session)
+        result = srv._stop_event_history(sid)
+        assert result[0]["event"]["reason"] == "breakpoint-hit"
+
+    def test_list_threads_returns_list_of_dicts(self):
+        session = make_session()
+        session.list_threads.return_value = [
+            ThreadInfo(
+                thread_id="1",
+                target_id="Thread 1",
+                state="stopped",
+                current=True,
+                frame=Frame(level=0, function="main", file="main.c", line=5),
+            )
+        ]
+        sid = register(session)
+        result = srv._list_threads(sid)
+        assert result[0]["thread_id"] == "1"
+
+    def test_list_registers_returns_list_of_dicts(self):
+        session = make_session()
+        session.list_registers.return_value = [
+            RegisterValue(number=1, name="ra", value="0x1000")
+        ]
+        sid = register(session)
+        result = srv._list_registers(sid)
+        assert result[0]["name"] == "ra"
 
 
 # ---------------------------------------------------------------------------

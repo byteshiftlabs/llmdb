@@ -1,0 +1,123 @@
+:root {
+  color-scheme: dark;
+  --bg: #10161f;
+  --panel: rgba(18, 29, 40, 0.92);
+  --panel-alt: rgba(10, 20, 30, 0.86);
+  --text: #edf3f7;
+  --muted: #94a7b5;
+  --accent: #ff8c42;
+  --accent-soft: rgba(255, 140, 66, 0.15);
+  --line: rgba(255, 255, 255, 0.08);
+  --ok: #3ddc97;
+  --warn: #ffcd57;
+  --error: #ff6b6b;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  color: var(--text);
+  background:
+    radial-gradient(circle at top left, rgba(255, 140, 66, 0.18), transparent 28%),
+    radial-gradient(circle at top right, rgba(61, 220, 151, 0.12), transparent 22%),
+    linear-gradient(180deg, #0d1219, #111c27 52%, #0b1118 100%);
+  font-family: Georgia, "Iowan Old Style", "Palatino Linotype", serif;
+}
+
+.app-shell {
+  padding: 24px;
+}
+
+.hero {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: flex-start;
+  margin-bottom: 20px;
+}
+
+.eyebrow {
+  margin: 0 0 6px;
+  text-transform: uppercase;
+  letter-spacing: 0.16em;
+  font-size: 12px;
+  color: var(--accent);
+}
+
+.hero h1 {
+  margin: 0;
+  font-size: 32px;
+  line-height: 1.05;
+}
+
+.subtle {
+  color: var(--muted);
+}
+
+.status-badge {
+  padding: 10px 16px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  border: 1px solid rgba(255, 140, 66, 0.35);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  font-size: 12px;
+}
+
+.status-badge[data-state="stopped"] {
+  color: var(--warn);
+}
+
+.status-badge[data-state="connected"] {
+  color: var(--ok);
+}
+
+.status-badge[data-state="error"] {
+  color: var(--error);
+}
+
+.dashboard {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 16px;
+}
+
+.card {
+  padding: 18px;
+  border-radius: 18px;
+  background: linear-gradient(180deg, var(--panel), var(--panel-alt));
+  border: 1px solid var(--line);
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.22);
+}
+
+.card h2 {
+  margin-top: 0;
+  margin-bottom: 12px;
+  font-size: 18px;
+}
+
+.stat-line {
+  margin: 0 0 8px;
+  color: var(--text);
+}
+
+.empty-state {
+  min-height: 160px;
+}
+
+@media (max-width: 700px) {
+  .app-shell {
+    padding: 16px;
+  }
+
+  .hero {
+    flex-direction: column;
+  }
+
+  .hero h1 {
+    font-size: 26px;
+  }
+}
