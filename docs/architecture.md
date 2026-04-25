@@ -26,15 +26,18 @@ access is in scope.
 │              LLM (Claude, GPT, etc.)                 │
 └─────────────────────┬────────────────────────────────┘
                       │  MCP JSON-RPC (stdio)
-┌─────────────────────▼────────────────────────────────┐
+┌──────────────────────────────────────────────────────┐
 │  server.py  — MCP tool registration and dispatch     │
 │  (interface layer)                                   │
+├──────────────────────────────────────────────────────┤
+│  monitor.py — terminal dashboard and snapshot export │
+│  (client layer)                                      │
 ├──────────────────────────────────────────────────────┤
 │  session.py — DebugSession, GDB lifecycle            │
 │  (business logic layer)                              │
 ├──────────────────────────────────────────────────────┤
 │  models.py  — dataclasses: Frame, Breakpoint,        │
-│               StopEvent, Variable                    │
+│               StopEvent, SessionStatus, Monitor...   │
 │  (domain layer)                                      │
 ├──────────────────────────────────────────────────────┤
 │  pygdbmi    — GDB/MI protocol parser                 │
@@ -43,8 +46,8 @@ access is in scope.
 └──────────────────────────────────────────────────────┘
 ```
 
-Dependency direction: server → session → models. The domain layer (models) has
-no imports from any other project layer.
+Dependency direction: server → session → models, and monitor → session → models.
+The domain layer (models) has no imports from any other project layer.
 
 ---
 
@@ -60,6 +63,8 @@ values by all MCP tools:
 - `Variable` — name, type, value
 - `StopEvent` — reason (breakpoint-hit / end-stepping / signal / exited),
   frame, return value
+- `SessionStatus`, `TargetInfo`, `ThreadInfo`, `RegisterValue` — monitor-facing state
+- `StopRecord`, `MonitorSnapshot` — timeline and combined dashboard payloads
 
 ### `llmdb/session.py`
 
@@ -72,6 +77,8 @@ Key responsibilities:
 - Spawn GDB with the target executable
 - Send MI commands and parse responses into domain types
 - Block (with timeout) on async `*stopped` events after execution commands
+- Track monitor-friendly state such as recent stop events and current frame
+- Expose snapshot-oriented inspection helpers for threads, registers, and target metadata
 - Raise `DebugError` with a clear message on any GDB error response
 
 ### `llmdb/server.py`
@@ -83,13 +90,26 @@ Registers MCP tools. Each tool is a thin function that:
 
 No logic here beyond input validation and session lookup.
 
+### `llmdb/monitor.py`
+
+Provides a lightweight terminal dashboard and snapshot export path for human-facing
+monitoring workflows.
+
+Key responsibilities:
+- Build a combined `MonitorSnapshot` from a live `DebugSession`
+- Tail a QEMU serial log file into that snapshot
+- Render a terminal dashboard without depending on a heavyweight UI framework
+- Write a JSON snapshot file that a richer frontend can watch
+
 ---
 
 ## MCP Tool Surface
 
 | Tool | Parameters | Returns |
 |------|-----------|---------|
-| `start_session` | `executable: str` | `session_id: str` |
+| `start_session` | `executable, workspace_root=None, tool_policy='debug', allow_network=False, disable_sandbox=False, cpu_seconds=30, memory_mb=1024, process_limit=64, gdb_executable='gdb'` | `session_id: str` |
+| `connect_remote_target` | `session_id, target, transport='remote'` | `{target, transport, connected}` |
+| `disconnect_remote_target` | `session_id` | `{target, connected}` |
 | `stop_session` | `session_id` | `null` |
 | `run` | `session_id` | `StopEvent` |
 | `next` | `session_id` | `StopEvent` |
@@ -99,6 +119,11 @@ No logic here beyond input validation and session lookup.
 | `set_function_breakpoint` | `session_id, function` | `Breakpoint` |
 | `remove_breakpoint` | `session_id, bp_id` | `null` |
 | `list_breakpoints` | `session_id` | `list[Breakpoint]` |
+| `session_status` | `session_id` | `SessionStatus` |
+| `target_info` | `session_id` | `TargetInfo` |
+| `stop_event_history` | `session_id, limit=20` | `list[StopRecord]` |
+| `list_threads` | `session_id` | `list[ThreadInfo]` |
+| `list_registers` | `session_id` | `list[RegisterValue]` |
 | `read_variable` | `session_id, name` | `Variable` |
 | `evaluate` | `session_id, expression` | `str` |
 | `backtrace` | `session_id` | `list[Frame]` |
@@ -130,19 +155,33 @@ LLM calls next(session_id)
 
 ## Error Handling
 
-- `SessionNotFound` — raised by `server.py` when `session_id` is not in the sessions dict
-- `DebugError` — raised by `session.py` on any GDB error record (`^error`)
-- `TimeoutError` — raised by `session.py` if GDB does not respond within the configured timeout
+- `KeyError` — raised by `server.py` when `session_id` is not in the session registry
+- `PermissionError` — raised when tool policy blocks an operation or an accessed path is outside allowlisted roots
+- `FileNotFoundError` — raised when executable/source files are missing
+- `ValueError` — raised for invalid arguments (for example unsupported `tool_policy`, invalid remote target transport, unsafe MI input)
+- `SandboxError` — raised when sandboxed launch is requested but Bubblewrap is unavailable
+- `DebugError` — raised by `session.py` on GDB error responses (`^error`)
 
-All three propagate as MCP tool errors, which the MCP framework returns to the
+All of these propagate as MCP tool errors, which the MCP framework returns to the
 LLM as structured error content.
 
 ---
 
 ## Configuration
 
-No config file. The only external parameter is the executable path passed to
-`start_session`. GDB binary is resolved from `$PATH` (must be `gdb`).
+No config file is required. Runtime behavior is controlled through
+`start_session` arguments:
+
+- launch target and debugger: `executable`, `gdb_executable`
+- sandbox and resource controls: `disable_sandbox`, `allow_network`,
+  `cpu_seconds`, `memory_mb`, `process_limit`
+- path and tool boundaries: `workspace_root`, `tool_policy`
+
+Environment variable `LLMDB_ALLOWED_ROOTS` adds extra allowlisted source/executable
+roots (path-separated).
+
+The terminal monitor client accepts matching sandbox/debugger options plus
+monitor-specific output controls (for example `--json-out`).
 
 ---
 
@@ -152,37 +191,20 @@ No config file. The only external parameter is the executable path passed to
 
 **GDB MI injection prevention** (`session.py` — `_check_mi_safe`)
 
-All user-supplied strings (`file`, `function`, `name`, `expression`) are passed
-directly into GDB/MI command strings as f-string arguments. The GDB/MI protocol
-uses newline as a command separator: a newline embedded in a user string would
-let an LLM (or a compromised caller) inject an arbitrary second GDB command.
-
-`_check_mi_safe()` raises `ValueError` before any `write()` call if the string
-contains `\n`, `\r`, or `\x00`. This is the primary injection-prevention
-boundary for the server's attack surface.
+GDB/MI uses newline as a command separator; an embedded newline in a user-supplied string would inject a second command. `_check_mi_safe()` raises `ValueError` before any `write()` call if a string contains `\n`, `\r`, or `\x00`.
 
 **Executable validation** (`session.py` — `DebugSession.__init__`)
 
 - `Path.is_file()` — rejects directories, symlinks to non-files, and missing paths.
-- `os.access(executable, os.X_OK)` — rejects files that are not executable by
-  the current process, catching common mistakes (e.g. passing a source file
-  instead of a compiled binary) and reducing the risk of accidentally running
-  non-program files.
+- `os.access(executable, os.X_OK)` — rejects non-executable files (e.g. source files passed by mistake).
 
 **Session isolation**
 
-Sessions are identified by UUID4. IDs are not sequential, not guessable, and
-not reused after `stop_session` removes them from the registry.
+Session IDs are UUID4 — non-sequential, non-guessable, and not reused after `stop_session`.
 
-**No privilege escalation**
+**No privilege escalation** — GDB inherits the server's user and group. No `setuid`, `sudo`, or capability-raising code is present.
 
-The GDB subprocess inherits the server's user and group. No `setuid`, `sudo`,
-or capability-raising code is present.
-
-**No shell expansion**
-
-Executable paths and breakpoint targets are passed directly to GDB/MI commands,
-never through `sh -c` or `subprocess.run(shell=True)`.
+**No shell expansion** — paths and breakpoint targets go directly to GDB/MI commands, never through `sh -c` or `subprocess.run(shell=True)`.
 
 ---
 
@@ -190,52 +212,27 @@ never through `sh -c` or `subprocess.run(shell=True)`.
 
 ### 1. Three-layer architecture instead of a monolith
 
-A single-file design would have been simpler to write but would couple GDB
-protocol details, domain objects, and MCP wiring in one place. Tests would
-require starting a real GDB process. The three-layer split (server → session →
-models) makes each layer independently testable: models have no dependencies,
-session mocks GDB, server mocks the session.
+The split (server → session → models) makes each layer independently testable: models have no dependencies, session mocks GDB, server mocks the session.
 
 ### 2. pygdbmi as the GDB/MI transport
 
-pygdbmi turns raw GDB/MI text into Python dicts. The alternative — parsing GDB's
-text output directly — would require writing and maintaining a tokeniser for a
-protocol that varies across GDB versions. pygdbmi is the established choice for
-this; it is the same library used by gdbgui and several DAP implementations.
+pygdbmi parses GDB/MI text into Python dicts, avoiding a hand-written tokeniser for a protocol that varies across GDB versions. It's the same library used by gdbgui and several DAP implementations.
 
 ### 3. `get_gdb_response` after every `write`
 
-`session._send()` calls `write()` then reads the response with a separate
-`get_gdb_response()` call rather than using the return value of `write()`.
-This matches the way GDB/MI actually works: `write()` sends a command but the
-timing of the response is asynchronous. Keeping the pattern consistent also
-makes mocking in tests straightforward — every `_send` call makes exactly two
-mock interactions.
+GDB/MI responses are asynchronous: `write()` sends a command, `get_gdb_response()` reads the reply. Keeping this two-call pattern consistent makes every `_send` exactly two mock interactions in tests.
 
-### 4. Blocking `_wait_for_stop` with a 30-second timeout
+### 4. Blocking `_wait_for_stop` with a 30-second polling interval
 
-After execution commands (`run`, `next`, `step`, `continue`), the server blocks
-until GDB emits a `*stopped` notification. A 30-second hard timeout prevents
-the server from hanging forever on a program that loops. The trade-off: programs
-that take longer than 30 seconds to hit a breakpoint will time out. This is an
-acceptable limitation for an interactive debugging tool driven by an LLM; a
-human-paced debugging session will not run for 30 seconds between GDB responses.
+Execution commands block until GDB emits `*stopped`, polling in 30-second slices with no overall timeout. Long-running commands remain pending until the target stops or GDB errors.
 
 ### 5. stdio transport, not HTTP/SSE
 
-MCP supports both stdio and HTTP+SSE transports. stdio was chosen because:
-- Simpler deployment: the client spawns the server as a child process; no port
-  binding, no firewall rules, no TLS setup.
-- Natural single-tenant model: one Claude Desktop client ↔ one llmdb process.
-- HTTP/SSE can be added later without changing the tool layer.
+stdio simplifies deployment (the client spawns the server; no ports, no TLS) and maps naturally to a single-tenant model. HTTP/SSE can be added later without changing the tool layer.
 
 ### 6. All tool dispatch functions are module-level, not class methods
 
-`server.py` defines `_start_session`, `_next`, `_evaluate`, etc. as plain
-functions rather than methods on a class. This means tests can call them
-directly without constructing a server object or using the MCP framework. The
-`_sessions` registry is a module-level dict, which is reset by the
-`clear_sessions` autouse fixture in `test_server.py`.
+Tool handlers are plain functions, not class methods — tests call them directly without constructing a server object. The `_sessions` dict is reset by the `clear_sessions` autouse fixture in `test_server.py`.
 
 ---
 
@@ -243,52 +240,21 @@ directly without constructing a server object or using the MCP framework. The
 
 ### 1. LLM-controlled executable path
 
-`start_session` accepts an absolute path to an executable. An LLM prompted
-adversarially could pass `/bin/rm`, `/usr/bin/python3`, or any other executable
-on the filesystem. Once started, `run` would execute it under GDB.
-
-**Current mitigation**: the server requires the file to exist and be executable,
-but does not restrict which executables are allowed. Callers who need stricter
-isolation should run llmdb inside a container or under a seccomp profile.
-
-**Not yet implemented**: an optional allowlist of permitted executable prefixes
-(e.g. only paths under `/home/user/projects/`).
+`start_session` accepts any executable on the filesystem. The file must exist and be executable, but no path allowlist is enforced yet. For stricter control, run llmdb inside a container or under a seccomp profile.
 
 ### 2. GDB `shell` command via `evaluate`
 
-The `evaluate` tool maps to GDB's `-data-evaluate-expression`. An LLM could
-call `evaluate("(void)system(\"rm -rf /\")")` — a C expression that GDB
-evaluates by calling `system()` in the target process. This is not an llmdb
-bug; it is a fundamental property of a debugger that can call functions inside
-a live process.
+`evaluate` passes expressions to GDB's `-data-evaluate-expression`, which can invoke target-process functions such as `system()`. Newlines are blocked to prevent MI injection; execution is isolated to the target process, not the host shell. Expression allowlisting is not yet implemented.
 
-**Current mitigation**: newlines are blocked (preventing multi-command injection);
-the expression is evaluated in the context of the target process, not the host
-shell. The target process already runs with the same privileges as the server,
-so this does not introduce new privilege escalation.
+### 3. `_wait_for_stop` has no overall timeout control
 
-**Not yet implemented**: expression allowlisting or a read-only mode that
-disables `evaluate` entirely.
-
-### 3. `_wait_for_stop` timeout is not configurable
-
-The 30-second timeout in `_wait_for_stop` is a module-level constant. There is
-no way for callers to pass a custom timeout. Long-running programs (benchmarks,
-servers) will always time out before they can be debugged interactively.
+Execution commands block indefinitely until the target stops. No caller-configurable overall timeout exists.
 
 ### 4. Session leak on server crash
 
-If the MCP server process is killed while a session is active, the GDB
-subprocess is orphaned. The GDB process will eventually notice its stdin is
-closed and exit, but until then it holds file descriptors and process resources.
-No cleanup mechanism (e.g. a `SIGTERM` handler) is currently implemented.
+If the server process is killed, active GDB subprocesses are orphaned until they detect closed stdin. No `SIGTERM` handler is implemented.
 
 ### 5. No multi-thread support
 
-`_wait_for_stop` polls `get_gdb_response` in a tight loop on the calling thread.
-If the server were extended to handle multiple concurrent MCP tool calls over
-one session, callers would block each other. The current design is strictly
-single-threaded per session, which is correct for the intended use case (one LLM
-driving one debugging session step by step) but would need a redesign for
-concurrent use.
+Single-threaded per session by design. Concurrent tool calls on the same session would serialize — correct for one-LLM-one-session use, but would need a redesign for parallel workloads.
 
