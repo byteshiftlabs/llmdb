@@ -19,25 +19,22 @@ All responses are structured JSON — no GDB screen-scraping required.
 
 ## Requirements
 
-- Python 3.11 or newer
+- Python 3.10
 - GDB installed and on `$PATH`
 - A compiled binary to debug (unstripped, debug symbols recommended)
 
 ## Installation
 
 ```bash
-git clone https://github.com/yourname/llmdb
+git clone https://github.com/byteshiftlabs/llmdb
 cd llmdb
-python3 -m venv .venv
+python3.10 -m venv .venv
 source .venv/bin/activate
 pip install -e .
 ```
 
-Or with [uv](https://github.com/astral-sh/uv) (much faster):
-
-```bash
-uv venv && uv pip install -e .
-```
+The editable install path above was validated on Linux with Python 3.10 and GDB
+on `$PATH`.
 
 ## Running the server
 
@@ -45,22 +42,8 @@ uv venv && uv pip install -e .
 llmdb
 ```
 
-The server speaks MCP over stdio. Connect it from any MCP-capable client
-(Claude Desktop, a custom agent, `mcp` CLI, etc.).
-
-### Claude Desktop example
-
-Add this block to `claude_desktop_config.json`:
-
-```json
-{
-  "mcpServers": {
-    "llmdb": {
-      "command": "/path/to/llmdb/.venv/bin/llmdb"
-    }
-  }
-}
-```
+The server speaks MCP over stdio. It has been tested with VSCode.
+You can integrate it as an MCP server in any capable client by configuring the command to run `llmdb`.
 
 ## MCP tools
 
@@ -87,7 +70,7 @@ Add this block to `claude_desktop_config.json`:
 
 ```bash
 # Install dev dependencies
-uv pip install -e ".[dev]"
+pip install -e ".[dev]"
 
 # Run tests
 pytest
