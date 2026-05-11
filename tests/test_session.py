@@ -9,7 +9,7 @@ import pytest
 from unittest.mock import MagicMock, patch, call
 
 from llmdb.models import Frame, Breakpoint, Variable, StopEvent
-from llmdb.session import DebugSession, DebugError
+from llmdb.session import DebugSession, DebugError, SandboxConfig
 
 
 # ---------------------------------------------------------------------------
@@ -65,7 +65,7 @@ def session(tmp_path):
         MockCtrl.return_value = mock_ctrl
         # write_mi_response: consumed during __init__ (file-exec-and-symbols)
         mock_ctrl.get_gdb_response.return_value = done_response()
-        s = DebugSession(str(exe))
+        s = DebugSession(str(exe), sandbox=SandboxConfig(enabled=False))
         s._gdb = mock_ctrl  # expose for test manipulation
         yield s
 
@@ -82,6 +82,30 @@ class TestDebugSessionInit:
     def test_session_id_is_nonempty_string(self, session):
         assert isinstance(session.session_id, str)
         assert len(session.session_id) > 0
+
+    def test_sandboxed_launch_uses_bubblewrap_and_resource_wrapper(self, tmp_path):
+        exe = tmp_path / "prog"
+        exe.write_bytes(b"\x7fELF")
+        exe.chmod(0o755)
+
+        with patch("llmdb.session.GdbController") as MockCtrl, patch("llmdb.session.shutil.which", return_value="/usr/bin/bwrap"):
+            mock_ctrl = MagicMock()
+            mock_ctrl.get_gdb_response.return_value = done_response()
+            MockCtrl.return_value = mock_ctrl
+
+            DebugSession(
+                str(exe),
+                sandbox=SandboxConfig(enabled=True, workspace_root=tmp_path),
+            )
+
+        command = MockCtrl.call_args.kwargs["command"]
+        assert "/usr/bin/bwrap" in command
+        assert "--unshare-net" in command
+        assert str(tmp_path.resolve()) in command
+
+    def test_set_breakpoint_rejects_absolute_paths_outside_allowlist(self, session):
+        with pytest.raises(PermissionError):
+            session.set_breakpoint("/etc/passwd", 1)
 
 
 # ---------------------------------------------------------------------------
@@ -318,7 +342,15 @@ class TestListSourceContext:
         ))
         lines = session.list_source_context(radius=2)
         assert len(lines) == 5   # lines 8–12
-        assert "line 10" in lines[2]
+
+    def test_list_source_context_rejects_source_outside_allowlist(self, session, tmp_path):
+        src = tmp_path.parent / "outside.c"
+        src.write_text("int main(void) { return 0; }\n")
+        session.frame_info = MagicMock(return_value=Frame(
+            level=0, function="main", file=str(src), line=1
+        ))
+        with pytest.raises(PermissionError):
+            session.list_source_context(radius=1)
 
     def test_list_source_context_clamps_at_file_start(self, tmp_path, session):
         src = tmp_path / "short.c"

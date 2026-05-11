@@ -47,8 +47,10 @@ def sample_stop_event():
 def clear_sessions():
     """Ensure _sessions is empty before and after each test."""
     srv._sessions.clear()
+    srv._session_policies.clear()
     yield
     srv._sessions.clear()
+    srv._session_policies.clear()
 
 
 def register(session):
@@ -71,6 +73,7 @@ class TestStartSession:
             sid = srv._start_session(str(exe))
         assert sid == "new-uuid"
         assert "new-uuid" in srv._sessions
+        assert srv._session_policies["new-uuid"] == "debug"
 
     def test_start_session_rejects_nonexistent_executable(self):
         with pytest.raises(FileNotFoundError):
@@ -215,6 +218,22 @@ class TestEvaluateTool:
         sid = register(session)
         result = srv._evaluate(sid, "3 + 4")
         assert result == "7"
+
+    def test_evaluate_requires_full_policy(self):
+        session = make_session()
+        sid = register(session)
+        srv._session_policies[sid] = "debug"
+        with pytest.raises(PermissionError, match="tool_policy='full'"):
+            srv._evaluate(sid, "3 + 4")
+
+
+class TestToolPolicy:
+    def test_run_requires_debug_or_full_policy(self):
+        session = make_session()
+        sid = register(session)
+        srv._session_policies[sid] = "inspect"
+        with pytest.raises(PermissionError, match="tool_policy='debug'"):
+            srv._run(sid)
 
 
 class TestBacktraceTool:

@@ -21,6 +21,7 @@ All responses are structured JSON — no GDB screen-scraping required.
 
 - Python 3.10
 - GDB installed and on `$PATH`
+- Bubblewrap (`bwrap`) installed for the default sandboxed mode on Linux
 - A compiled binary to debug (unstripped, debug symbols recommended)
 
 ## Installation
@@ -35,6 +36,22 @@ pip install -e .
 
 The editable install path above was validated on Linux with Python 3.10 and GDB
 on `$PATH`.
+
+## Security model
+
+`llmdb` now supports a sandbox-first session model for Linux:
+
+- GDB is launched inside a Bubblewrap user-namespace sandbox by default.
+- Only the requested executable directory, the optional `workspace_root`, and explicit allowlisted roots are mounted read-only.
+- Networking is disabled by default.
+- The sandbox runs as an unprivileged uid/gid and gets a temporary home directory.
+- CPU, address-space, and process-count limits are applied before GDB starts.
+- Tool access is policy-gated:
+	- `inspect`: read-only inspection tools only
+	- `debug`: stepping and breakpoint management, but no arbitrary `evaluate`
+	- `full`: all tools, including `evaluate`
+
+If Bubblewrap is not installed, `start_session` fails closed unless the caller explicitly sets `disable_sandbox=true`.
 
 ## Running the server
 
@@ -61,6 +78,8 @@ You can integrate it as an MCP server in any capable client by configuring the c
 | `list_breakpoints` | List all active breakpoints |
 | `read_variable` | Read a variable's value and type |
 | `evaluate` | Evaluate any GDB expression |
+
+`start_session` also accepts optional `workspace_root`, `tool_policy`, `allow_network`, `disable_sandbox`, `cpu_seconds`, `memory_mb`, and `process_limit` arguments.
 | `backtrace` | Return the full call stack |
 | `frame_info` | Return the current frame (file, line, function) |
 | `list_locals` | List all local variables in the current frame |
