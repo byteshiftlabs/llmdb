@@ -96,12 +96,14 @@ class TestDebugSessionInit:
             DebugSession(
                 str(exe),
                 sandbox=SandboxConfig(enabled=True, workspace_root=tmp_path),
+                gdb_executable="riscv64-unknown-elf-gdb",
             )
 
         command = MockCtrl.call_args.kwargs["command"]
         assert "/usr/bin/bwrap" in command
         assert "--unshare-net" in command
         assert str(tmp_path.resolve()) in command
+        assert "riscv64-unknown-elf-gdb" in command
 
     def test_set_breakpoint_rejects_absolute_paths_outside_allowlist(self, session):
         with pytest.raises(PermissionError):
@@ -127,6 +129,27 @@ class TestRun:
         session._gdb.get_gdb_response.side_effect = [error_response("bad exec")]
         with pytest.raises(DebugError, match="bad exec"):
             session.run()
+
+
+class TestRemoteTargets:
+    def test_connect_remote_target_accepts_connected_result(self, session):
+        session._gdb.get_gdb_response.return_value = [
+            {"type": "result", "message": "connected", "payload": None}
+        ]
+        result = session.connect_remote_target(":1234")
+        assert result == {"target": ":1234", "transport": "remote", "connected": True}
+        assert session._remote_target == ":1234"
+
+    def test_connect_remote_target_rejects_whitespace(self, session):
+        with pytest.raises(ValueError, match="remote target specification"):
+            session.connect_remote_target("localhost: 1234")
+
+    def test_disconnect_remote_target_returns_disconnected_state(self, session):
+        session._remote_target = ":1234"
+        session._gdb.get_gdb_response.return_value = done_response()
+        result = session.disconnect_remote_target()
+        assert result == {"target": ":1234", "connected": False}
+        assert session._remote_target is None
 
 
 class TestNext:

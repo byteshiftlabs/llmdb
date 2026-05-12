@@ -75,6 +75,16 @@ class TestStartSession:
         assert "new-uuid" in srv._sessions
         assert srv._session_policies["new-uuid"] == "debug"
 
+    def test_start_session_passes_gdb_executable(self, tmp_path):
+        exe = tmp_path / "prog"
+        exe.write_text("")
+        with patch("llmdb.server.DebugSession") as MockSession:
+            mock = MagicMock()
+            mock.session_id = "new-uuid"
+            MockSession.return_value = mock
+            srv._start_session(str(exe), gdb_executable="riscv64-unknown-elf-gdb")
+        assert MockSession.call_args.kwargs["gdb_executable"] == "riscv64-unknown-elf-gdb"
+
     def test_start_session_rejects_nonexistent_executable(self):
         with pytest.raises(FileNotFoundError):
             srv._start_session("/does/not/exist")
@@ -114,6 +124,28 @@ class TestRunTool:
     def test_run_unknown_session_raises(self):
         with pytest.raises(KeyError):
             srv._run("ghost")
+
+
+class TestRemoteTargetTools:
+    def test_connect_remote_target_returns_status_dict(self):
+        session = make_session()
+        session.connect_remote_target.return_value = {
+            "target": ":1234",
+            "transport": "remote",
+            "connected": True,
+        }
+        sid = register(session)
+        result = srv._connect_remote_target(sid, ":1234")
+        assert result["connected"] is True
+        session.connect_remote_target.assert_called_once_with(":1234", "remote")
+
+    def test_disconnect_remote_target_returns_status_dict(self):
+        session = make_session()
+        session.disconnect_remote_target.return_value = {"target": ":1234", "connected": False}
+        sid = register(session)
+        result = srv._disconnect_remote_target(sid)
+        assert result["connected"] is False
+        session.disconnect_remote_target.assert_called_once()
 
 
 class TestNextTool:

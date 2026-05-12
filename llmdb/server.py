@@ -26,6 +26,8 @@ _session_policies: dict[str, str] = {}
 
 _POLICY_ORDER = {"inspect": 0, "debug": 1, "full": 2}
 _TOOL_POLICIES = {
+    "connect_remote_target": "debug",
+    "disconnect_remote_target": "debug",
     "run": "debug",
     "next": "debug",
     "step": "debug",
@@ -77,6 +79,7 @@ def _start_session(
     cpu_seconds: int = 30,
     memory_mb: int = 1024,
     process_limit: int = 64,
+    gdb_executable: str = "gdb",
 ) -> str:
     """Launch GDB on executable; return session_id."""
     if not Path(executable).is_file():
@@ -96,7 +99,7 @@ def _start_session(
         process_limit=process_limit,
         extra_allowed_roots=extra_roots,
     )
-    session = DebugSession(executable, sandbox=sandbox)
+    session = DebugSession(executable, sandbox=sandbox, gdb_executable=gdb_executable)
     _sessions[session.session_id] = session
     _session_policies[session.session_id] = tool_policy
     return session.session_id
@@ -115,6 +118,14 @@ def _stop_session(session_id: str) -> None:
 
 def _run(session_id: str) -> dict:
     return _serialise(_check_tool_policy(session_id, "run").run())
+
+
+def _connect_remote_target(session_id: str, target: str, transport: str = "remote") -> dict:
+    return _check_tool_policy(session_id, "connect_remote_target").connect_remote_target(target, transport)
+
+
+def _disconnect_remote_target(session_id: str) -> dict:
+    return _check_tool_policy(session_id, "disconnect_remote_target").disconnect_remote_target()
 
 
 def _next(session_id: str) -> dict:
@@ -193,7 +204,8 @@ _TOOLS = [
                           "disable_sandbox": {"type": "boolean", "default": False},
                           "cpu_seconds": {"type": "integer", "default": 30},
                           "memory_mb": {"type": "integer", "default": 1024},
-                          "process_limit": {"type": "integer", "default": 64}},
+                          "process_limit": {"type": "integer", "default": 64},
+                          "gdb_executable": {"type": "string", "default": "gdb"}},
                       "required": ["executable"]}),
     Tool(name="stop_session",
          description="Quit GDB and remove the session.",
@@ -203,6 +215,19 @@ _TOOLS = [
     Tool(name="run",
          description="Run the program to the first breakpoint or exit.",
          inputSchema={"type": "object",
+                      "properties": {"session_id": {"type": "string"}},
+                      "required": ["session_id"]}),
+        Tool(name="connect_remote_target",
+            description="Connect the current GDB session to a remote target such as gdbserver or QEMU's debug stub.",
+            inputSchema={"type": "object",
+                      "properties": {
+                         "session_id": {"type": "string"},
+                         "target": {"type": "string"},
+                         "transport": {"type": "string", "enum": ["remote", "extended-remote"], "default": "remote"}},
+                      "required": ["session_id", "target"]}),
+        Tool(name="disconnect_remote_target",
+            description="Disconnect the current GDB session from its remote target.",
+            inputSchema={"type": "object",
                       "properties": {"session_id": {"type": "string"}},
                       "required": ["session_id"]}),
     Tool(name="next",
@@ -295,7 +320,12 @@ _DISPATCH = {
                                    a.get("cpu_seconds", 30),
                                    a.get("memory_mb", 1024),
                                    a.get("process_limit", 64),
+                                   a.get("gdb_executable", "gdb"),
                                ),
+    "connect_remote_target":   lambda a: _connect_remote_target(
+                                   a["session_id"], a["target"], a.get("transport", "remote")
+                               ),
+    "disconnect_remote_target": lambda a: _disconnect_remote_target(a["session_id"]),
     "stop_session":            lambda a: _stop_session(a["session_id"]),
     "run":                     lambda a: _run(a["session_id"]),
     "next":                    lambda a: _next(a["session_id"]),

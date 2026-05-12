@@ -50,12 +50,12 @@ Items without a milestone are ideas under consideration, not committed work.
 - [ ] `switch_thread` — change the selected thread
 - [ ] `follow_fork` — configure GDB's fork follow mode (`parent` / `child`)
 - [ ] Multi-session: allow more than one debug session simultaneously (currently supported but untested under load)
+- [x] Remote target support: connect to `gdbserver` or QEMU debug stubs from an existing symbol session
 
 ---
 
 ## Future ideas (no commitment)
 
-- Remote target support: connect to `gdbserver` running on a separate host or device
 - Core file analysis: load a `.core` file and inspect a post-mortem state
 - Structured pretty-printers: emit parsed C++ STL containers instead of raw addresses
 - VS Code debug adapter bridge: translate MCP tool calls to DAP messages so llmdb can also be used as a VS Code debug adapter
