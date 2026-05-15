@@ -160,6 +160,26 @@ def _list_breakpoints(session_id: str) -> list[dict]:
     return [_serialise(bp) for bp in _lookup(session_id).list_breakpoints()]
 
 
+def _session_status(session_id: str) -> dict:
+    return _serialise(_lookup(session_id).session_status())
+
+
+def _target_info(session_id: str) -> dict:
+    return _serialise(_lookup(session_id).target_info())
+
+
+def _stop_event_history(session_id: str, limit: int = 20) -> list[dict]:
+    return [_serialise(record) for record in _lookup(session_id).stop_event_history(limit)]
+
+
+def _list_threads(session_id: str) -> list[dict]:
+    return [_serialise(thread) for thread in _lookup(session_id).list_threads()]
+
+
+def _list_registers(session_id: str) -> list[dict]:
+    return [_serialise(register) for register in _lookup(session_id).list_registers()]
+
+
 # ---------------------------------------------------------------------------
 # Inspection tools
 # ---------------------------------------------------------------------------
@@ -272,6 +292,33 @@ _TOOLS = [
          inputSchema={"type": "object",
                       "properties": {"session_id": {"type": "string"}},
                       "required": ["session_id"]}),
+        Tool(name="session_status",
+            description="Return high-level session state for monitoring views.",
+            inputSchema={"type": "object",
+                      "properties": {"session_id": {"type": "string"}},
+                      "required": ["session_id"]}),
+        Tool(name="target_info",
+            description="Return target connection details such as executable, remote target, and sandbox mode.",
+            inputSchema={"type": "object",
+                      "properties": {"session_id": {"type": "string"}},
+                      "required": ["session_id"]}),
+        Tool(name="stop_event_history",
+            description="Return recent stop events for timeline-style monitoring.",
+            inputSchema={"type": "object",
+                      "properties": {
+                         "session_id": {"type": "string"},
+                         "limit": {"type": "integer", "default": 20}},
+                      "required": ["session_id"]}),
+        Tool(name="list_threads",
+            description="List threads reported by GDB for the current target.",
+            inputSchema={"type": "object",
+                      "properties": {"session_id": {"type": "string"}},
+                      "required": ["session_id"]}),
+        Tool(name="list_registers",
+            description="List register names and values for the current target.",
+            inputSchema={"type": "object",
+                      "properties": {"session_id": {"type": "string"}},
+                      "required": ["session_id"]}),
     Tool(name="read_variable",
          description="Read the value and type of a variable in the current frame.",
          inputSchema={"type": "object",
@@ -335,6 +382,11 @@ _DISPATCH = {
     "set_function_breakpoint": lambda a: _set_function_breakpoint(a["session_id"], a["function"]),
     "remove_breakpoint":       lambda a: _remove_breakpoint(a["session_id"], a["bp_id"]),
     "list_breakpoints":        lambda a: _list_breakpoints(a["session_id"]),
+    "session_status":          lambda a: _session_status(a["session_id"]),
+    "target_info":             lambda a: _target_info(a["session_id"]),
+    "stop_event_history":      lambda a: _stop_event_history(a["session_id"], a.get("limit", 20)),
+    "list_threads":            lambda a: _list_threads(a["session_id"]),
+    "list_registers":          lambda a: _list_registers(a["session_id"]),
     "read_variable":           lambda a: _read_variable(a["session_id"], a["name"]),
     "evaluate":                lambda a: _evaluate(a["session_id"], a["expression"]),
     "backtrace":               lambda a: _backtrace(a["session_id"]),

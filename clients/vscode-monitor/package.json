@@ -1,0 +1,42 @@
+{
+  "name": "llmdb-monitor",
+  "displayName": "llmdb Monitor",
+  "description": "VS Code monitor scaffold for llmdb snapshot files.",
+  "version": "0.0.1",
+  "publisher": "byteshiftlabs",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Debuggers",
+    "Other"
+  ],
+  "activationEvents": [
+    "onCommand:llmdbMonitor.openMonitor"
+  ],
+  "main": "./extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "llmdbMonitor.openMonitor",
+        "title": "llmdb: Open Monitor"
+      }
+    ],
+    "configuration": {
+      "title": "llmdb Monitor",
+      "properties": {
+        "llmdbMonitor.snapshotPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to a JSON snapshot file written by llmdb-monitor --json-out."
+        },
+        "llmdbMonitor.refreshIntervalMs": {
+          "type": "number",
+          "default": 1000,
+          "minimum": 500,
+          "description": "Polling interval in milliseconds for refreshing the monitor view."
+        }
+      }
+    }
+  }
+}
