@@ -7,10 +7,10 @@ Items without a milestone are ideas under consideration, not committed work.
 
 ## v0.1 — Minimum viable product (current)
 
-- [x] MCP server with 16 tools (exec control, breakpoints, inspection, source context)
+- [x] MCP server with 23 tools (session lifecycle, remote targets, exec control, breakpoints, monitoring, inspection, source context)
 - [x] `DebugSession` wrapping pygdbmi / GDB/MI
 - [x] Pure dataclass domain model
-- [x] Full unit test suite (57 tests, no real GDB needed)
+- [x] Full unit test suite (92 tests, no real GDB needed)
 - [x] Architecture documentation
 
 ---
@@ -41,12 +41,15 @@ Items without a milestone are ideas under consideration, not committed work.
 - [ ] `memory_read` — read raw bytes at an address (useful for pointer debugging)
 - [ ] `set_variable` — change a variable's value at runtime
 - [ ] Type information via GDB variable objects (`-var-create`) rather than heuristics
+- [x] Monitoring primitives: session status, target info, stop history, threads, and registers
+- [x] Terminal monitor UI with optional QEMU serial log tailing
+- [x] VS Code monitor scaffold driven by `llmdb-monitor --json-out`
 
 ---
 
 ## v0.4 — Multi-process and thread support
 
-- [ ] `list_threads` — return all threads in the target process
+- [x] `list_threads` — return all threads in the target process
 - [ ] `switch_thread` — change the selected thread
 - [ ] `follow_fork` — configure GDB's fork follow mode (`parent` / `child`)
 - [ ] Multi-session: allow more than one debug session simultaneously (currently supported but untested under load)
@@ -67,4 +70,5 @@ Items without a milestone are ideas under consideration, not committed work.
 
 - No hardware or embedded support (JTAG, OpenOCD, etc.) — out of scope by design
 - `read_variable` returns GDB's text representation; complex types (structs, arrays) are returned as a single string
-- `_wait_for_stop` has a hard 30-second timeout; long-running programs will timeout rather than run indefinitely
+- `_wait_for_stop` polls GDB in 30-second slices and currently has no overall timeout control
+- The VS Code monitor is currently file-driven; it watches JSON snapshots rather than speaking MCP directly
