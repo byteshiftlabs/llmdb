@@ -6,7 +6,8 @@ No actual GDB binary is needed to run this suite.
 """
 
 import pytest
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, patch
+from pygdbmi.constants import GdbTimeoutError
 
 from llmdb.models import Frame, Breakpoint, Variable, StopEvent
 from llmdb.session import DebugSession, DebugError
@@ -104,6 +105,11 @@ class TestRun:
         with pytest.raises(DebugError, match="bad exec"):
             session.run()
 
+    def test_run_raises_debug_error_on_gdb_timeout(self, session):
+        session._gdb.get_gdb_response.side_effect = GdbTimeoutError("no response")
+        with pytest.raises(DebugError, match="30 seconds"):
+            session.run()
+
 
 class TestNext:
     def test_next_returns_stop_event_with_new_line(self, session):
@@ -168,6 +174,11 @@ class TestSetBreakpoint:
         session._gdb.get_gdb_response.return_value = error_response("no such file")
         with pytest.raises(DebugError, match="no such file"):
             session.set_breakpoint("missing.c", 1)
+
+    def test_set_breakpoint_raises_debug_error_on_gdb_timeout(self, session):
+        session._gdb.get_gdb_response.side_effect = GdbTimeoutError("no response")
+        with pytest.raises(DebugError, match="10 seconds"):
+            session.set_breakpoint("main.c", 1)
 
 
 class TestSetFunctionBreakpoint:
