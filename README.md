@@ -19,31 +19,39 @@ All responses are structured JSON — no GDB screen-scraping required.
 
 ## Requirements
 
-- Python 3.10
+- Python 3.10.x
 - GDB installed and on `$PATH`
 - A compiled binary to debug (unstripped, debug symbols recommended)
 
-## Installation
+## Quick start
 
 ```bash
 git clone https://github.com/byteshiftlabs/llmdb
 cd llmdb
 python3.10 -m venv .venv
 source .venv/bin/activate
-pip install -e .
+pip install -e ".[dev]"
+llmdb
 ```
 
 The editable install path above was validated on Linux with Python 3.10 and GDB
 on `$PATH`.
 
-## Running the server
+## Example client configuration
 
-```bash
-llmdb
+Many MCP clients can launch the server as a local process. A typical VS Code or Claude Desktop-style configuration looks like this:
+
+```json
+{
+  "mcpServers": {
+    "llmdb": {
+      "command": "/path/to/your/venv/bin/llmdb"
+    }
+  }
+}
 ```
 
-The server speaks MCP over stdio. It has been tested with VSCode.
-You can integrate it as an MCP server in any capable client by configuring the command to run `llmdb`.
+See [docs/quickstart.md](docs/quickstart.md) for a fuller walkthrough and troubleshooting tips.
 
 ## MCP tools
 
@@ -54,7 +62,7 @@ You can integrate it as an MCP server in any capable client by configuring the c
 | `run` | Start execution (`-exec-run`) |
 | `next` | Step over one source line |
 | `step` | Step into a function call |
-| `continue` | Resume until the next breakpoint or program exit |
+| `continue_execution` | Resume until the next breakpoint or program exit |
 | `set_breakpoint` | Break at `file:line` |
 | `set_function_breakpoint` | Break at a named function |
 | `remove_breakpoint` | Delete a breakpoint by ID |
@@ -77,7 +85,7 @@ pytest
 ```
 
 All tests mock the GDB subprocess — no actual GDB process is started during
-`pytest`. Tests cover every MCP tool and every session method.
+`pytest`. The suite covers the MCP tools and the session layer.
 
 ## Architecture
 
