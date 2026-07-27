@@ -8,16 +8,14 @@ JSON-serialisable dict.
 Entry point: llmdb.server:main  (see pyproject.toml)
 """
 
-import sys
 from dataclasses import asdict
 from pathlib import Path
 
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
-import mcp.types as types
 
-from llmdb.session import DebugSession, DebugError
+from llmdb.session import DebugSession
 
 # Session registry — keyed by session_id UUID string
 _sessions: dict[str, DebugSession] = {}
