@@ -8,7 +8,6 @@ blocks on async events, and returns typed domain objects.
 import os
 import uuid
 from pathlib import Path
-from typing import Optional
 
 from pygdbmi.constants import GdbTimeoutError
 from pygdbmi.gdbcontroller import GdbController

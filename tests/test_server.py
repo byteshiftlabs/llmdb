@@ -10,7 +10,6 @@ DebugSession is fully mocked — these tests verify that:
 
 import pytest
 from unittest.mock import MagicMock, patch
-from dataclasses import asdict
 
 from llmdb.models import Frame, Breakpoint, Variable, StopEvent
 from llmdb.session import DebugError
