@@ -10,7 +10,7 @@ Items without a milestone are ideas under consideration, not committed work.
 - [x] MCP server with 16 tools (exec control, breakpoints, inspection, source context)
 - [x] `DebugSession` wrapping pygdbmi / GDB/MI
 - [x] Pure dataclass domain model
-- [x] Full unit test suite (57 tests, no real GDB needed)
+- [x] Full unit test suite (68 tests, no real GDB needed)
 - [x] Architecture documentation
 
 ---
