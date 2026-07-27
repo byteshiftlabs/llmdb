@@ -10,6 +10,7 @@ import uuid
 from pathlib import Path
 from typing import Optional
 
+from pygdbmi.constants import GdbTimeoutError
 from pygdbmi.gdbcontroller import GdbController
 
 from llmdb.models import Breakpoint, Frame, StopEvent, Variable
@@ -146,7 +147,10 @@ class DebugSession:
     def _send(self, command: str) -> dict:
         """Send an MI command; return its payload or raise DebugError."""
         self._gdb.write(command, read_response=False)
-        responses = self._gdb.get_gdb_response(timeout_sec=10) or []
+        try:
+            responses = self._gdb.get_gdb_response(timeout_sec=10)
+        except GdbTimeoutError:
+            raise DebugError(f"GDB did not respond to {command!r} within 10 seconds")
         return self._extract_payload(responses)
 
     def _extract_payload(self, responses: list) -> dict:
@@ -160,9 +164,10 @@ class DebugSession:
     def _wait_for_stop(self) -> StopEvent:
         """Poll GDB until a *stopped notify arrives or an error is seen."""
         while True:
-            responses = self._gdb.get_gdb_response(timeout_sec=30)
-            if responses is None:
-                responses = []
+            try:
+                responses = self._gdb.get_gdb_response(timeout_sec=30)
+            except GdbTimeoutError:
+                raise DebugError("GDB did not stop within 30 seconds")
             for r in responses:
                 if r.get("message") == "error":
                     raise DebugError(r.get("payload", {}).get("msg", "GDB error"))
