@@ -130,12 +130,18 @@ LLM calls next(session_id)
 
 ## Error Handling
 
-- `SessionNotFound` — raised by `server.py` when `session_id` is not in the sessions dict
-- `DebugError` — raised by `session.py` on any GDB error record (`^error`)
-- `TimeoutError` — raised by `session.py` if GDB does not respond within the configured timeout
+- `KeyError` — raised by `server.py`'s `_lookup()` when `session_id` is not in the sessions dict
+- `DebugError` — raised by `session.py` on any GDB error record (`^error`), and on a GDB
+  timeout (`session.py` catches pygdbmi's `GdbTimeoutError` and re-raises it as `DebugError`)
+- `FileNotFoundError` / `PermissionError` / `ValueError` — raised by `session.py` for an
+  invalid executable, a non-executable file, or a GDB/MI-unsafe string, respectively
 
-All three propagate as MCP tool errors, which the MCP framework returns to the
-LLM as structured error content.
+None of these are caught inside `server.py`. The MCP SDK's own `call_tool` dispatch wraps
+every tool call in a generic `except Exception`, so any of the above still reaches the LLM
+as an MCP error result (`isError=True`) rather than crashing the server — but the payload is
+just the exception's message as plain text, not a structured JSON error. Mapping specific
+`DebugError` subtypes to structured MCP error payloads is tracked as a v0.2 item in
+ROADMAP.md.
 
 ---
 
