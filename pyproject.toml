@@ -29,6 +29,12 @@ dev = [
 [project.scripts]
 llmdb = "llmdb.server:main"
 
+[tool.ruff.lint]
+# Pinned explicitly so a ruff upgrade changing its default rule set (as 0.16.0 did,
+# adding dozens of categories like S/BLE/UP/I on top of the traditional E/F default)
+# can't silently expand what CI enforces here.
+select = ["E4", "E7", "E9", "F"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
