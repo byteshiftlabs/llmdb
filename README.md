@@ -1,5 +1,9 @@
 # llmdb
 
+![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)
+![Language: Python 3.10](https://img.shields.io/badge/Language-Python_3.10-blue.svg)
+![CI](https://github.com/byteshiftlabs/llmdb/actions/workflows/ci.yml/badge.svg)
+
 A GDB/MI MCP server that gives LLMs interactive software debugging capabilities.
 
 ## What it does
