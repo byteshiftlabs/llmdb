@@ -4,13 +4,12 @@ Tests for MCP server tool dispatch (server.py).
 DebugSession is fully mocked — these tests verify that:
 - the server registers each tool
 - tools delegate correctly to DebugSession
-- missing session_id raises SessionNotFound
-- DebugError from session propagates as MCP error content
+- missing session_id raises KeyError
+- DebugError from session propagates unchanged
 """
 
 import pytest
 from unittest.mock import MagicMock, patch
-from dataclasses import asdict
 
 from llmdb.models import Frame, Breakpoint, Variable, StopEvent
 from llmdb.session import DebugError
