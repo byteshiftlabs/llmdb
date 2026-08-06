@@ -130,9 +130,7 @@ class DebugSession:
     def list_source_context(self, radius: int = 5) -> list[str]:
         radius = min(radius, _MAX_RADIUS)
         frame = self.frame_info()
-        path = Path(frame.file)
-        if not path.is_file():
-            raise FileNotFoundError(f"Source file not found: {frame.file}")
+        path = self._resolve_source_path(frame.file)
         lines = path.read_text().splitlines()
         center = frame.line - 1  # 0-based
         start = max(0, center - radius)
@@ -142,6 +140,28 @@ class DebugSession:
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    def _resolve_source_path(self, file: str) -> Path:
+        """Resolve a frame's source path on disk.
+
+        GDB's MI frame reports usually include an absolute `fullname`
+        (embedded in the binary's debug info as the compile directory),
+        which `_parse_frame` prefers. But when a binary was built with
+        only a relative path recorded, `file` is all GDB has, and that
+        path is meaningless relative to *this* process's cwd — it was
+        only ever meaningful relative to GDB's own launch directory. In
+        that case, fall back to looking next to the debugged executable,
+        which is where the source usually lives during a debug session.
+        """
+        path = Path(file)
+        if path.is_file():
+            return path
+        fallback = Path(self._executable).resolve().parent / path.name
+        if fallback.is_file():
+            return fallback
+        raise FileNotFoundError(
+            f"Source file not found: tried {path} and {fallback}"
+        )
 
     def _send(self, command: str) -> dict:
         """Send an MI command; return its payload or raise DebugError."""
@@ -174,17 +194,25 @@ class DebugSession:
                     return self._parse_stop_event(r["payload"])
 
     def _parse_stop_event(self, payload: dict) -> StopEvent:
+        # GDB/MI omits "frame" entirely for exit reasons (exited,
+        # exited-normally, exited-signalled) — there is no frame left
+        # once the process is gone, so payload["frame"] would KeyError.
+        frame_data = payload.get("frame")
         return StopEvent(
             reason=payload.get("reason", "unknown"),
-            frame=self._parse_frame(payload["frame"]),
+            frame=self._parse_frame(frame_data) if frame_data else None,
             return_val=payload.get("return-value"),
         )
 
     def _parse_frame(self, f: dict) -> Frame:
+        # Prefer "fullname" (the absolute path GDB resolved from the
+        # binary's debug info) over "file" (often just a bare filename,
+        # meaningful only relative to GDB's own launch directory — not
+        # this process's cwd).
         return Frame(
             level=int(f.get("level", 0)),
             function=f.get("func", "??"),
-            file=f.get("file", f.get("fullname", "??")),
+            file=f.get("fullname") or f.get("file", "??"),
             line=int(f.get("line", 0)),
         )
 

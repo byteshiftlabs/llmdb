@@ -40,5 +40,5 @@ class Variable:
 class StopEvent:
     """Describes why and where GDB stopped."""
     reason: str          # "breakpoint-hit", "end-stepping-range", "exited", "signal-received"
-    frame: Frame
+    frame: Optional[Frame]  # None when the reason is an exit — the process has no frame left
     return_val: Optional[str] = None  # set when reason == "exited"

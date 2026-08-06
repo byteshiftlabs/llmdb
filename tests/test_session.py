@@ -41,6 +41,15 @@ def stopped_response(reason="end-stepping-range", file="main.c", line=5, func="m
     }]
 
 
+def exited_response(reason="exited-normally", return_val=None):
+    """A *stopped notification for process exit — GDB/MI omits "frame"
+    entirely here, since there is no frame once the process is gone."""
+    payload = {"reason": reason}
+    if return_val is not None:
+        payload["return-value"] = return_val
+    return [{"type": "notify", "message": "stopped", "payload": payload}]
+
+
 def done_response(extra=None):
     payload = {} if extra is None else extra
     return [{"type": "result", "message": "done", "payload": payload}]
@@ -146,6 +155,28 @@ class TestContinue:
         ev = session.continue_execution()
         assert ev.reason == "breakpoint-hit"
         assert ev.frame.line == 20
+
+    def test_continue_to_process_exit_returns_stop_event_without_frame(self, session):
+        """Regression test: GDB/MI's *stopped payload for an exit reason
+        has no "frame" key. This must not raise KeyError('frame')."""
+        session._gdb.get_gdb_response.side_effect = [
+            [],
+            exited_response("exited-normally", return_val="0"),
+        ]
+        ev = session.continue_execution()
+        assert ev.reason == "exited-normally"
+        assert ev.frame is None
+        assert ev.return_val == "0"
+
+    def test_continue_to_process_exit_with_nonzero_code(self, session):
+        session._gdb.get_gdb_response.side_effect = [
+            [],
+            exited_response("exited", return_val="1"),
+        ]
+        ev = session.continue_execution()
+        assert ev.reason == "exited"
+        assert ev.frame is None
+        assert ev.return_val == "1"
 
 
 # ---------------------------------------------------------------------------
@@ -300,6 +331,29 @@ class TestFrameInfo:
         assert f.function == "foo"
         assert f.line == 7
 
+    def test_frame_info_prefers_fullname_over_bare_file(self, session):
+        """Regression test: "file" is a bare filename meaningful only
+        relative to GDB's own launch directory, not this process's cwd.
+        "fullname" is the absolute path GDB resolved from debug info and
+        must win when both are present and differ."""
+        session._gdb.get_gdb_response.return_value = done_response({
+            "frame": {
+                "level": "0", "func": "foo",
+                "file": "foo.c",
+                "fullname": "/home/user/project/src/foo.c",
+                "line": "7",
+            }
+        })
+        f = session.frame_info()
+        assert f.file == "/home/user/project/src/foo.c"
+
+    def test_frame_info_falls_back_to_file_when_no_fullname(self, session):
+        session._gdb.get_gdb_response.return_value = done_response({
+            "frame": {"level": "0", "func": "foo", "file": "foo.c", "line": "7"}
+        })
+        f = session.frame_info()
+        assert f.file == "foo.c"
+
 
 class TestListLocals:
     def test_list_locals_returns_variables(self, session):
@@ -345,6 +399,28 @@ class TestListSourceContext:
             level=0, function="main", file="/nonexistent/file.c", line=1
         ))
         with pytest.raises(FileNotFoundError):
+            session.list_source_context()
+
+    def test_list_source_context_falls_back_to_executable_directory(self, tmp_path, session):
+        """Regression test: when GDB only reports a bare filename (no
+        resolvable absolute path), look for the source next to the
+        debugged executable before giving up."""
+        src = tmp_path / "task_queue.c"
+        src.write_text("\n".join(f"line {i}" for i in range(1, 21)))
+        session._executable = str(tmp_path / "task_queue")
+        session.frame_info = MagicMock(return_value=Frame(
+            level=0, function="main", file="task_queue.c", line=10
+        ))
+        lines = session.list_source_context(radius=2)
+        assert len(lines) == 5
+        assert "line 10" in lines[2]
+
+    def test_list_source_context_error_names_both_attempted_paths(self, tmp_path, session):
+        session._executable = str(tmp_path / "task_queue")
+        session.frame_info = MagicMock(return_value=Frame(
+            level=0, function="main", file="missing.c", line=1
+        ))
+        with pytest.raises(FileNotFoundError, match="missing.c"):
             session.list_source_context()
 
 
