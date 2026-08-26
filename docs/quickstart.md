@@ -34,4 +34,4 @@ Many MCP clients can launch llmdb as a local process. A minimal example is:
 
 - `gdb` is not found: install GDB and ensure it is on your `PATH`.
 - `start_session` fails: confirm that the target executable exists, is executable, and was built with debug symbols where possible.
-- The server is intended for Linux/macOS hosts with a working POSIX environment.
+- The server was validated on Linux with Python 3.10 and GDB on `$PATH`.
