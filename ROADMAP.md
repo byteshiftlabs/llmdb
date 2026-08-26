@@ -10,14 +10,14 @@ Items without a milestone are ideas under consideration, not committed work.
 - [x] MCP server with 16 tools (exec control, breakpoints, inspection, source context)
 - [x] `DebugSession` wrapping pygdbmi / GDB/MI
 - [x] Pure dataclass domain model
-- [x] Full unit test suite (57 tests, no real GDB needed)
+- [x] Full unit test suite (68 tests, no real GDB needed)
 - [x] Architecture documentation
 
 ---
 
 ## v0.2 — Reliability and error handling
 
-- [ ] Smoke test against a real compiled binary (integration test, gated separately)
+- [x] Smoke test against a real compiled binary (`demo/smoke_test.py`, manual — not wired into CI)
 - [ ] Graceful handling of GDB crash or unexpected exit during `_wait_for_stop`
 - [ ] Session timeout: auto-clean sessions idle longer than a configurable duration
 - [ ] Structured MCP error codes (map `DebugError` subtypes to MCP error payloads)
