@@ -83,12 +83,12 @@ class DebugSession:
     def set_breakpoint(self, file: str, line: int) -> Breakpoint:
         _check_mi_safe(file, "file")
         payload = self._send(f"-break-insert {file}:{line}")
-        return self._parse_breakpoint(payload["bkpt"])
+        return self._parse_breakpoint(self._require(payload, "bkpt", "set_breakpoint response"))
 
     def set_function_breakpoint(self, function: str) -> Breakpoint:
         _check_mi_safe(function, "function")
         payload = self._send(f"-break-insert {function}")
-        return self._parse_breakpoint(payload["bkpt"])
+        return self._parse_breakpoint(self._require(payload, "bkpt", "set_function_breakpoint response"))
 
     def remove_breakpoint(self, bp_id: int) -> None:
         self._send(f"-break-delete {bp_id}")
@@ -105,12 +105,13 @@ class DebugSession:
     def read_variable(self, name: str) -> Variable:
         _check_mi_safe(name, "name")
         payload = self._send(f"-data-evaluate-expression {name}")
-        return Variable(name=name, type=payload.get("type", "unknown"), value=payload["value"])
+        value = self._require(payload, "value", "read_variable response")
+        return Variable(name=name, type=payload.get("type", "unknown"), value=value)
 
     def evaluate(self, expression: str) -> str:
         _check_mi_safe(expression, "expression")
         payload = self._send(f"-data-evaluate-expression {expression}")
-        return payload["value"]
+        return self._require(payload, "value", "evaluate response")
 
     def backtrace(self) -> list[Frame]:
         payload = self._send("-stack-list-frames")
@@ -119,7 +120,7 @@ class DebugSession:
 
     def frame_info(self) -> Frame:
         payload = self._send("-stack-info-frame")
-        return self._parse_frame(payload["frame"])
+        return self._parse_frame(self._require(payload, "frame", "frame_info response"))
 
     def list_locals(self) -> list[Variable]:
         payload = self._send("-stack-list-locals --all-values")
@@ -129,6 +130,8 @@ class DebugSession:
         ]
 
     def list_source_context(self, radius: int = 5) -> list[str]:
+        if radius < 0:
+            raise ValueError(f"radius must be non-negative, got {radius}")
         radius = min(radius, _MAX_RADIUS)
         frame = self.frame_info()
         path = Path(frame.file)
@@ -143,6 +146,13 @@ class DebugSession:
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    def _require(self, payload: dict, key: str, context: str) -> object:
+        """Return payload[key], or raise DebugError if GDB's response is missing it."""
+        try:
+            return payload[key]
+        except KeyError:
+            raise DebugError(f"Unexpected GDB response: missing {key!r} in {context}")
 
     def _send(self, command: str) -> dict:
         """Send an MI command; return its payload or raise DebugError."""
@@ -177,7 +187,7 @@ class DebugSession:
     def _parse_stop_event(self, payload: dict) -> StopEvent:
         return StopEvent(
             reason=payload.get("reason", "unknown"),
-            frame=self._parse_frame(payload["frame"]),
+            frame=self._parse_frame(self._require(payload, "frame", "stop event")),
             return_val=payload.get("return-value"),
         )
 
@@ -191,7 +201,7 @@ class DebugSession:
 
     def _parse_breakpoint(self, bkpt: dict) -> Breakpoint:
         return Breakpoint(
-            bp_id=int(bkpt["number"]),
+            bp_id=int(self._require(bkpt, "number", "breakpoint record")),
             file=bkpt.get("file", "??"),
             line=int(bkpt.get("line", 0)),
             function=bkpt.get("func", "??"),
