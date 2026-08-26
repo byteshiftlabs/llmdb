@@ -5,7 +5,7 @@ Pure dataclasses — no I/O, no GDB knowledge.
 All MCP tools return instances of these types, serialised to dicts.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
 
 
