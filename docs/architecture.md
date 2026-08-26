@@ -130,11 +130,11 @@ LLM calls next(session_id)
 
 ## Error Handling
 
-- `SessionNotFound` — raised by `server.py` when `session_id` is not in the sessions dict
-- `DebugError` — raised by `session.py` on any GDB error record (`^error`)
-- `TimeoutError` — raised by `session.py` if GDB does not respond within the configured timeout
+- `KeyError` — raised by `server.py` when `session_id` is not in the sessions dict
+- `DebugError` — raised by `session.py` on any GDB error record (`^error`), and also
+  wraps a GDB timeout (no response within the configured timeout) as its message
 
-All three propagate as MCP tool errors, which the MCP framework returns to the
+Both propagate as MCP tool errors, which the MCP framework returns to the
 LLM as structured error content.
 
 ---
