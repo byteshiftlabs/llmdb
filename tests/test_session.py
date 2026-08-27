@@ -399,3 +399,58 @@ class TestListSourceContextRadiusCap:
         # A huge radius should not cause an error — it's clamped internally
         lines = session.list_source_context(radius=999999)
         assert len(lines) <= 9  # file only has 9 lines
+
+    def test_negative_radius_raises(self, tmp_path, session):
+        src = tmp_path / "small.c"
+        src.write_text("\n".join(f"line {i}" for i in range(1, 10)))
+        session.frame_info = MagicMock(return_value=Frame(
+            level=0, function="main", file=str(src), line=5
+        ))
+        with pytest.raises(ValueError, match="radius"):
+            session.list_source_context(radius=-1)
+
+
+class TestMalformedGdbResponse:
+    """GDB's response is missing a key the code expects to always be there."""
+
+    def test_set_breakpoint_raises_debug_error_when_bkpt_missing(self, session):
+        session._gdb.get_gdb_response.side_effect = [done_response(extra={})]
+        with pytest.raises(DebugError, match="bkpt"):
+            session.set_breakpoint("main.c", 5)
+
+    def test_set_function_breakpoint_raises_debug_error_when_bkpt_missing(self, session):
+        session._gdb.get_gdb_response.side_effect = [done_response(extra={})]
+        with pytest.raises(DebugError, match="bkpt"):
+            session.set_function_breakpoint("main")
+
+    def test_parse_breakpoint_raises_debug_error_when_number_missing(self, session):
+        session._gdb.get_gdb_response.side_effect = [
+            done_response(extra={"bkpt": {"file": "main.c", "line": "5"}})
+        ]
+        with pytest.raises(DebugError, match="number"):
+            session.set_breakpoint("main.c", 5)
+
+    def test_read_variable_raises_debug_error_when_value_missing(self, session):
+        session._gdb.get_gdb_response.side_effect = [
+            done_response(extra={"type": "int"})
+        ]
+        with pytest.raises(DebugError, match="value"):
+            session.read_variable("x")
+
+    def test_evaluate_raises_debug_error_when_value_missing(self, session):
+        session._gdb.get_gdb_response.side_effect = [done_response(extra={})]
+        with pytest.raises(DebugError, match="value"):
+            session.evaluate("2 + 2")
+
+    def test_frame_info_raises_debug_error_when_frame_missing(self, session):
+        session._gdb.get_gdb_response.side_effect = [done_response(extra={})]
+        with pytest.raises(DebugError, match="frame"):
+            session.frame_info()
+
+    def test_run_raises_debug_error_when_stopped_payload_missing_frame(self, session):
+        session._gdb.get_gdb_response.side_effect = [
+            [],  # *running (empty, ignored)
+            [{"type": "notify", "message": "stopped", "payload": {"reason": "exited"}}],
+        ]
+        with pytest.raises(DebugError, match="frame"):
+            session.run()
