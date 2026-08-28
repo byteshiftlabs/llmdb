@@ -9,7 +9,7 @@ description = "GDB/MI MCP server — interactive debugging for LLMs"
 requires-python = ">=3.10,<3.11"
 license = { text = "MIT" }
 dependencies = [
-    "mcp>=1.0.0",
+    "mcp>=1.0.0,<2.0.0",
     "pygdbmi>=0.11.0",
 ]
 
